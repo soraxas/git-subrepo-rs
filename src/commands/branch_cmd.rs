@@ -1,14 +1,11 @@
-use crate::commands::{
-    Context, assert_clean_for, delete_branch_and_worktree, normalize_subdir, subrepo_branch,
-    subrepo_fetch,
-};
+use crate::commands::{Context, assert_clean_for, normalize_subdir, subrepo_branch, subrepo_fetch};
 use crate::encode::encode_subdir;
-use crate::git_utils::branch_exists;
 use crate::gitrepo::read_gitrepo;
 use anyhow::Result;
 
 pub fn run(subdir: String, force: bool, fetch: bool, quiet: bool) -> Result<()> {
-    let ctx = Context::new()?;
+    let mut ctx = Context::new()?;
+    ctx.quiet = quiet;
     assert_clean_for("branch", &ctx)?;
 
     let subdir = normalize_subdir(&subdir);
@@ -23,15 +20,7 @@ pub fn run(subdir: String, force: bool, fetch: bool, quiet: bool) -> Result<()> 
 
     let branch_name = format!("subrepo/{subref}");
 
-    if force {
-        delete_branch_and_worktree(&ctx, &subdir, &subref)?;
-    }
-
-    if branch_exists(&branch_name, &ctx.repo_root) {
-        anyhow::bail!("Branch '{branch_name}' already exists. Use '--force' to override.");
-    }
-
-    let _worktree = subrepo_branch(&ctx, &subdir, &subref, &cfg.parent, &cfg.method)?;
+    let _worktree = subrepo_branch(&ctx, &subdir, &subref, &cfg.parent, &cfg.method, force)?;
 
     if !quiet {
         println!(

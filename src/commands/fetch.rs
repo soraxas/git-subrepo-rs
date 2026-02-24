@@ -9,7 +9,8 @@ pub fn run(
     remote_override: Option<String>,
     quiet: bool,
 ) -> Result<()> {
-    let ctx = Context::new()?;
+    let mut ctx = Context::new()?;
+    ctx.quiet = quiet;
     assert_clean_for("fetch", &ctx)?;
 
     let subdir = normalize_subdir(&subdir);

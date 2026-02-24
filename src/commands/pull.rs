@@ -19,7 +19,8 @@ pub fn run(
     message: Option<String>,
     edit: bool,
 ) -> Result<()> {
-    let ctx = Context::new()?;
+    let mut ctx = Context::new()?;
+    ctx.quiet = quiet;
     assert_clean_for("pull", &ctx)?;
 
     let subdir = normalize_subdir(&subdir);
@@ -60,7 +61,7 @@ pub fn run(
     delete_branch_and_worktree(&ctx, &subdir, &subref)?;
 
     // Create subrepo branch
-    let worktree = subrepo_branch(&ctx, &subdir, &subref, &cfg.parent, &cfg.method)?;
+    let worktree = subrepo_branch(&ctx, &subdir, &subref, &cfg.parent, &cfg.method, force)?;
 
     // Merge upstream fetch into worktree
     let refs_subrepo_fetch = format!("refs/subrepo/{subref}/fetch");

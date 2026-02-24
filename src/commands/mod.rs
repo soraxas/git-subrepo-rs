@@ -183,10 +183,30 @@ pub fn build_commit_message(
 /// Perform the subrepo:fetch operation.
 /// Returns the upstream HEAD commit SHA.
 pub fn subrepo_fetch(ctx: &Context, remote: &str, branch: &str, subref: &str) -> Result<String> {
-    run_git(
+    use indicatif::{ProgressBar, ProgressStyle};
+
+    let pb = if !ctx.quiet {
+        let pb = ProgressBar::new_spinner();
+        pb.set_style(
+            ProgressStyle::default_spinner()
+                .template("{spinner:.cyan} {msg}")
+                .unwrap(),
+        );
+        pb.set_message(format!("Fetching {remote} ({branch})..."));
+        pb.enable_steady_tick(std::time::Duration::from_millis(80));
+        Some(pb)
+    } else {
+        None
+    };
+
+    let fetch_result = run_git(
         &["fetch", "--no-tags", "--quiet", remote, branch],
         &ctx.repo_root,
-    )?;
+    );
+    if let Some(ref pb) = pb {
+        pb.finish_and_clear();
+    }
+    fetch_result?;
 
     let upstream_head = run_git(&["rev-parse", "FETCH_HEAD^0"], &ctx.repo_root)?;
     run_git(
@@ -209,13 +229,18 @@ pub fn subrepo_branch(
     subref: &str,
     subrepo_parent: &str,
     join_method: &str,
+    force: bool,
 ) -> Result<PathBuf> {
     let branch_name = format!("subrepo/{subref}");
 
     if branch_exists(&branch_name, &ctx.repo_root) {
-        return Err(anyhow::anyhow!(
-            "Branch '{branch_name}' already exists. Use '--force' to override."
-        ));
+        if force {
+            delete_branch_and_worktree(ctx, subdir, subref)?;
+        } else {
+            return Err(anyhow::anyhow!(
+                "Branch '{branch_name}' already exists. Use '--force' to override."
+            ));
+        }
     }
 
     if subrepo_parent.is_empty() {

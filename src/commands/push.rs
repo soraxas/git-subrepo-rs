@@ -17,7 +17,8 @@ pub fn run(
     quiet: bool,
     message: Option<String>,
 ) -> Result<()> {
-    let ctx = Context::new()?;
+    let mut ctx = Context::new()?;
+    ctx.quiet = quiet;
     assert_clean_for("push", &ctx)?;
 
     let subdir = normalize_subdir(&subdir);
@@ -83,7 +84,14 @@ pub fn run(
     delete_branch_and_worktree(&ctx, &subdir, &subref)?;
 
     // Create subrepo branch (worktree not used directly - we push the branch)
-    let _worktree = subrepo_branch(&ctx, &subdir, &subref, &effective_parent, &cfg.method)?;
+    let _worktree = subrepo_branch(
+        &ctx,
+        &subdir,
+        &subref,
+        &effective_parent,
+        &cfg.method,
+        force,
+    )?;
 
     // Check if there's anything to push
     let branch_head = rev_parse(&branch_name, &ctx.repo_root).unwrap_or_default();

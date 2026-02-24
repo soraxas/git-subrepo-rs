@@ -7,6 +7,7 @@ mod gitrepo;
 
 use clap::Parser;
 use cli::{Cli, Commands};
+use colored::Colorize;
 
 fn get_all_subrepos(all_all: bool) -> anyhow::Result<Vec<String>> {
     let cwd = std::env::current_dir()?;
@@ -33,7 +34,66 @@ fn get_all_subrepos(all_all: bool) -> anyhow::Result<Vec<String>> {
     Ok(subrepos)
 }
 
-fn main() {
+fn print_no_command_help() {
+    println!(
+        "{}\n",
+        "git-subrepo - Manage git sub-repositories"
+            .bright_cyan()
+            .bold()
+    );
+    println!("Usage: {} <command> [options]\n", "git subrepo".bold());
+    println!("{}:", "Commands".bold());
+    let cmds = [
+        (
+            "clone",
+            "<remote> [<subdir>]",
+            "Clone a remote repository into a subdir",
+        ),
+        ("init", "<subdir>", "Turn a subdir into a subrepo"),
+        ("pull", "[<subdir>]", "Pull upstream changes"),
+        ("push", "[<subdir>]", "Push local commits upstream"),
+        ("fetch", "[<subdir>]", "Fetch upstream (creates ref)"),
+        (
+            "branch",
+            "[<subdir>]",
+            "Create a branch of local subrepo commits",
+        ),
+        ("commit", "<subdir>", "Commit a merged branch into mainline"),
+        ("status", "[<subdir>]", "Show subrepo status"),
+        ("clean", "[<subdir>]", "Remove subrepo branches/refs"),
+        ("config", "<subdir> <key>", "Get/set subrepo config"),
+    ];
+    for (name, args, desc) in &cmds {
+        println!("  {:<8} {:<26}  {}", name.green().bold(), args, desc);
+    }
+    println!("\n{}:", "Global options".bold());
+    let opts = [
+        ("-a, --all", "Operate on all subrepos"),
+        ("-f, --force", "Force operation"),
+        ("-F, --fetch", "Fetch upstream first"),
+        ("-q, --quiet", "Suppress output"),
+        ("-v, --verbose", "Verbose output"),
+    ];
+    for (flag, desc) in &opts {
+        println!("  {:<20}  {}", flag.yellow().bold(), desc);
+    }
+}
+
+/// Group subrepo paths by path depth (number of '/' separators).
+fn group_by_depth(subrepos: Vec<String>) -> Vec<Vec<String>> {
+    let mut levels: Vec<Vec<String>> = Vec::new();
+    for subdir in subrepos {
+        let depth = subdir.chars().filter(|&c| c == '/').count();
+        while levels.len() <= depth {
+            levels.push(Vec::new());
+        }
+        levels[depth].push(subdir);
+    }
+    levels
+}
+
+#[tokio::main]
+async fn main() {
     // Use try_parse to format errors ourselves
     let cli = match Cli::try_parse() {
         Ok(c) => c,
@@ -143,11 +203,11 @@ fn main() {
     let fetch = cli.fetch;
     let edit = cli.edit;
 
-    let result: anyhow::Result<()> = (|| {
+    let result: anyhow::Result<()> = async {
         match cli.command {
             None => {
-                eprintln!("git-subrepo: No command given. See 'git subrepo help'.");
-                std::process::exit(1);
+                print_no_command_help();
+                std::process::exit(0);
             }
             Some(Commands::Clone {
                 remote,
@@ -189,18 +249,32 @@ fn main() {
                 }
                 if all || all_all {
                     let subrepos = get_all_subrepos(all_all)?;
-                    for s in subrepos {
-                        commands::pull::run(
-                            s,
-                            branch.clone(),
-                            remote.clone(),
-                            force,
-                            method.clone(),
-                            quiet || q,
-                            update,
-                            message.clone(),
-                            edit,
-                        )?;
+                    let total = subrepos.len();
+                    // Process in depth order (parents before children) but sequentially
+                    // since pull commits to the repo and concurrent git commits conflict.
+                    let levels = group_by_depth(subrepos);
+                    let mut idx = 0usize;
+                    for level in levels {
+                        for s in level {
+                            idx += 1;
+                            if !quiet && !q {
+                                eprintln!(
+                                    "{}",
+                                    format!("[{idx}/{total}] Pulling '{s}'...").bright_cyan()
+                                );
+                            }
+                            commands::pull::run(
+                                s,
+                                branch.clone(),
+                                remote.clone(),
+                                force,
+                                method.clone(),
+                                quiet || q,
+                                update,
+                                message.clone(),
+                                edit,
+                            )?;
+                        }
                     }
                     Ok(())
                 } else {
@@ -234,17 +308,30 @@ fn main() {
             }) => {
                 if all || all_all {
                     let subrepos = get_all_subrepos(all_all)?;
-                    for s in subrepos {
-                        commands::push::run(
-                            s,
-                            branch.clone(),
-                            remote.clone(),
-                            force,
-                            method.clone(),
-                            squash,
-                            quiet || q,
-                            message.clone(),
-                        )?;
+                    let total = subrepos.len();
+                    // Sequential: push commits to the repo; concurrent commits conflict.
+                    let levels = group_by_depth(subrepos);
+                    let mut idx = 0usize;
+                    for level in levels {
+                        for s in level {
+                            idx += 1;
+                            if !quiet && !q {
+                                eprintln!(
+                                    "{}",
+                                    format!("[{idx}/{total}] Pushing '{s}'...").bright_cyan()
+                                );
+                            }
+                            commands::push::run(
+                                s,
+                                branch.clone(),
+                                remote.clone(),
+                                force,
+                                method.clone(),
+                                squash,
+                                quiet || q,
+                                message.clone(),
+                            )?;
+                        }
                     }
                     Ok(())
                 } else {
@@ -270,8 +357,43 @@ fn main() {
             }) => {
                 if all || all_all {
                     let subrepos = get_all_subrepos(all_all)?;
-                    for s in subrepos {
-                        commands::fetch::run(s, branch.clone(), remote.clone(), quiet || q)?;
+                    let total = subrepos.len();
+                    let mp = indicatif::MultiProgress::new();
+                    let levels = group_by_depth(subrepos);
+                    let mut idx = 0usize;
+                    for level in levels {
+                        let mut set: tokio::task::JoinSet<anyhow::Result<()>> =
+                            tokio::task::JoinSet::new();
+                        for s in level {
+                            idx += 1;
+                            let pb = mp.add(indicatif::ProgressBar::new_spinner());
+                            pb.set_style(
+                                indicatif::ProgressStyle::default_spinner()
+                                    .template("{spinner:.cyan} {msg}")
+                                    .unwrap(),
+                            );
+                            pb.set_message(format!("[{idx}/{total}] Fetching '{}'...", s.green()));
+                            pb.enable_steady_tick(std::time::Duration::from_millis(80));
+                            let branch = branch.clone();
+                            let remote = remote.clone();
+                            let s_display = s.clone();
+                            let cur_idx = idx;
+                            set.spawn(async move {
+                                let result = tokio::task::spawn_blocking(move || {
+                                    commands::fetch::run(s, branch, remote, quiet || q)
+                                })
+                                .await
+                                .map_err(|e| anyhow::anyhow!("task panicked: {e}"))?;
+                                pb.finish_with_message(format!(
+                                    "[{cur_idx}/{total}] Done '{}'",
+                                    s_display.green()
+                                ));
+                                result
+                            });
+                        }
+                        while let Some(res) = set.join_next().await {
+                            res??;
+                        }
                     }
                     Ok(())
                 } else {
@@ -283,9 +405,22 @@ fn main() {
             Some(Commands::Branch { subdir, quiet: q }) => {
                 if all || all_all {
                     let subrepos = get_all_subrepos(all_all)?;
-                    for s in subrepos {
-                        // branch --all: skip subrepos with no new commits
-                        let _ = commands::branch_cmd::run(s, force, fetch, quiet || q);
+                    let total = subrepos.len();
+                    // Sequential: branch modifies the repo; concurrent operations conflict.
+                    let levels = group_by_depth(subrepos);
+                    let mut idx = 0usize;
+                    for level in levels {
+                        for s in level {
+                            idx += 1;
+                            if !quiet && !q {
+                                eprintln!(
+                                    "{}",
+                                    format!("[{idx}/{total}] Branching '{s}'...").bright_cyan()
+                                );
+                            }
+                            // branch --all: skip subrepos with no new commits
+                            let _ = commands::branch_cmd::run(s, force, fetch, quiet || q);
+                        }
                     }
                     Ok(())
                 } else {
@@ -316,8 +451,41 @@ fn main() {
             Some(Commands::Clean { subdir, quiet: q }) => {
                 if (all || all_all) && subdir.is_none() {
                     let subrepos = get_all_subrepos(all_all)?;
-                    for s in subrepos {
-                        commands::clean::run(Some(s), force, quiet || q)?;
+                    let total = subrepos.len();
+                    let mp = indicatif::MultiProgress::new();
+                    let levels = group_by_depth(subrepos);
+                    let mut idx = 0usize;
+                    for level in levels {
+                        let mut set: tokio::task::JoinSet<anyhow::Result<()>> =
+                            tokio::task::JoinSet::new();
+                        for s in level {
+                            idx += 1;
+                            let pb = mp.add(indicatif::ProgressBar::new_spinner());
+                            pb.set_style(
+                                indicatif::ProgressStyle::default_spinner()
+                                    .template("{spinner:.cyan} {msg}")
+                                    .unwrap(),
+                            );
+                            pb.set_message(format!("[{idx}/{total}] Cleaning '{}'...", s.green()));
+                            pb.enable_steady_tick(std::time::Duration::from_millis(80));
+                            let s_display = s.clone();
+                            let cur_idx = idx;
+                            set.spawn(async move {
+                                let result = tokio::task::spawn_blocking(move || {
+                                    commands::clean::run(Some(s), force, quiet || q)
+                                })
+                                .await
+                                .map_err(|e| anyhow::anyhow!("task panicked: {e}"))?;
+                                pb.finish_with_message(format!(
+                                    "[{cur_idx}/{total}] Done '{}'",
+                                    s_display.green()
+                                ));
+                                result
+                            });
+                        }
+                        while let Some(res) = set.join_next().await {
+                            res??;
+                        }
                     }
                     Ok(())
                 } else {
@@ -328,7 +496,8 @@ fn main() {
                 commands::config::run(subdir, key, value, force)
             }
         }
-    })();
+    }
+    .await;
 
     if let Err(e) = result {
         eprintln!("git-subrepo: {e}");
