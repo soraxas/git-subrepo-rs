@@ -1,0 +1,71 @@
+# fail_fast: true
+ci:
+  skip: [cargo-fmt, cargo-clippy]
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: fix-byte-order-marker
+      - id: sort-simple-yaml
+      - id: check-yaml
+        args:
+          - --unsafe
+      - id: check-added-large-files
+        priority: 0
+      - id: check-added-large-files
+        priority: 0
+      - id: check-json
+        priority: 0
+        exclude: ^\.devcontainer/devcontainer.json
+      - id: check-toml
+        priority: 0
+      - id: mixed-line-ending
+        priority: 0
+      - id: check-xml
+        priority: 0
+      - id: check-symlinks
+        priority: 0
+      - id: check-merge-conflict
+        priority: 0
+      - id: detect-private-key
+        priority: 0
+      - id: check-executables-have-shebangs
+        priority: 0
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.11.0.1
+    hooks:
+      - id: shellcheck
+        priority: 0
+  - repo: https://github.com/rvben/rumdl-pre-commit
+    rev: v0.0.211
+    hooks:
+      - id: rumdl-fmt  # Auto-format (fixes what it can)
+
+  - repo: https://github.com/crate-ci/typos
+    rev: v1.41.0
+    hooks:
+      - id: typos
+
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: cargo fmt
+        entry: cargo fmt --
+        language: system
+        types: [rust]
+        pass_filenames: false # This makes it a lot faster
+
+      - id: cargo-clippy
+        name: cargo clippy
+        language: system
+        types: [rust]
+        pass_filenames: false
+        # entry: cargo clippy --all-targets --all-features -- -D warnings
+        entry: cargo clippy -- -D warnings
+
+  - repo: https://github.com/biomejs/pre-commit
+    rev: v2.3.10
+    hooks:
+      - id: biome-check
