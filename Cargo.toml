@@ -1,6 +1,25 @@
 [package]
-name = "git-subrepo-rs_rewrite"
-version = "0.1.0"
+name = "git-subrepo"
+authors = ["Tin Lai <tin@tinyiu.com>"]
+description = "Git subrepo workflow"
 edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/soraxas/git-subrepo-rs.git"
+version = "0.0.1"
 
 [dependencies]
+ansi-to-tui         = "8.0.1"
+anyhow              = "1.0.102"
+clap                = { version = "4.5.60", features = [ "derive" ] }
+crossterm           = { version = "0.29.0", features = [ "event-stream" ] }
+futures             = "0.3.32"
+paste               = "1.0.15"
+ratatui             = { version = "0.30.0", features = [ "serde", "unstable-rendered-line-info", "unstable-widget-ref" ] }
+regex               = "1.12.3"
+russh               = { version = "0.57.0", default-features = false, features = [ "ring", "rsa" ] }
+thiserror           = "2.0.18"
+tokio               = { version = "1.49.0", features = [ "full" ] }
+tokio-stream        = "0.1.18"
+indicatif = "0.17"
+git2 = { version = "0.20.4", features = ["https", "ssh"] }
+colored = "3.1.1"
