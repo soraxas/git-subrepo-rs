@@ -3,6 +3,7 @@ use crate::encode::encode_subdir;
 use crate::git_utils::{branch_exists, rev_parse_short, try_run_git};
 use crate::gitrepo::read_gitrepo;
 use anyhow::Result;
+use colored::Colorize;
 
 pub fn run(
     subdir_opt: Option<String>,
@@ -26,7 +27,7 @@ pub fn run(
     };
 
     if subdirs.is_empty() && !quiet {
-        println!("No subrepos.");
+        println!("{}", "No subrepos.".yellow());
         return Ok(());
     }
 
@@ -34,7 +35,7 @@ pub fn run(
         let count = subdirs.len();
         let s = if count == 1 { "" } else { "s" };
         if !has_subdir {
-            println!("{count} subrepo{s}:");
+            println!("{}", format!("{count} subrepo{s}:").bold());
             println!();
         }
     }
@@ -44,7 +45,7 @@ pub fn run(
         let gitrepo_path = ctx.repo_root.join(subdir).join(".gitrepo");
 
         if !gitrepo_path.exists() {
-            println!("'{subdir}' is not a subrepo");
+            println!("{}", format!("'{subdir}' is not a subrepo").red());
             println!();
             continue;
         }
@@ -52,7 +53,7 @@ pub fn run(
         let cfg = match read_gitrepo(&gitrepo_path, &ctx.repo_root) {
             Ok(c) => c,
             Err(_) => {
-                println!("'{subdir}' is not a subrepo");
+                println!("{}", format!("'{subdir}' is not a subrepo").red());
                 println!();
                 continue;
             }
@@ -66,24 +67,44 @@ pub fn run(
         let refs_subrepo_fetch = format!("refs/subrepo/{subref}/fetch");
         let upstream_short = rev_parse_short(&refs_subrepo_fetch, &ctx.repo_root);
 
-        println!("Git subrepo '{subdir}':");
+        println!(
+            "{} '{}':",
+            "Git subrepo".bold().bright_cyan(),
+            subdir.bold().bright_yellow()
+        );
         if branch_exists(&format!("subrepo/{subref}"), &ctx.repo_root) {
-            println!("  Subrepo Branch:  subrepo/{subref}");
+            println!("  {}  subrepo/{subref}", "Subrepo Branch:".bold().green());
         }
-        println!("  Remote URL:      {}", cfg.remote);
+        println!(
+            "  {}  {}",
+            "Remote URL:     ".bold().green(),
+            cfg.remote.bright_blue()
+        );
         if let Some(ref us) = upstream_short {
-            println!("  Upstream Ref:    {us}");
+            println!("  {}  {}", "Upstream Ref:   ".bold().green(), us.yellow());
         }
-        println!("  Tracking Branch: {}", cfg.branch);
+        println!(
+            "  {}  {}",
+            "Tracking Branch:".bold().green(),
+            cfg.branch.cyan()
+        );
         if !cfg.commit.is_empty()
             && let Some(short) = rev_parse_short(&cfg.commit, &ctx.repo_root)
         {
-            println!("  Pulled Commit:   {short}");
+            println!(
+                "  {}  {}",
+                "Pulled Commit:  ".bold().green(),
+                short.yellow()
+            );
         }
         if !cfg.parent.is_empty()
             && let Some(short) = rev_parse_short(&cfg.parent, &ctx.repo_root)
         {
-            println!("  Pull Parent:     {short}");
+            println!(
+                "  {}  {}",
+                "Pull Parent:    ".bold().green(),
+                short.dimmed()
+            );
         }
 
         if verbose {
@@ -158,11 +179,36 @@ fn print_status_refs(ctx: &Context, subref: &str) {
             .unwrap_or_else(|| sha[..7.min(sha.len())].to_string());
 
         match ref_type {
-            "branch" => output += &format!("    Branch Ref:    {short_sha} ({ref_name})\n"),
-            "commit" => output += &format!("    Commit Ref:    {short_sha} ({ref_name})\n"),
-            "fetch" => output += &format!("    Fetch Ref:     {short_sha} ({ref_name})\n"),
-            "pull" => output += &format!("    Pull Ref:      {short_sha} ({ref_name})\n"),
-            "push" => output += &format!("    Push Ref:      {short_sha} ({ref_name})\n"),
+            "branch" => {
+                output += &format!(
+                    "    {}  {short_sha} ({ref_name})\n",
+                    "Branch Ref:   ".bold().green()
+                )
+            }
+            "commit" => {
+                output += &format!(
+                    "    {}  {short_sha} ({ref_name})\n",
+                    "Commit Ref:   ".bold().green()
+                )
+            }
+            "fetch" => {
+                output += &format!(
+                    "    {}  {short_sha} ({ref_name})\n",
+                    "Fetch Ref:    ".bold().green()
+                )
+            }
+            "pull" => {
+                output += &format!(
+                    "    {}  {short_sha} ({ref_name})\n",
+                    "Pull Ref:     ".bold().green()
+                )
+            }
+            "push" => {
+                output += &format!(
+                    "    {}  {short_sha} ({ref_name})\n",
+                    "Push Ref:     ".bold().green()
+                )
+            }
             _ => {}
         }
     }

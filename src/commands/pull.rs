@@ -1,12 +1,27 @@
 use crate::commands::{
     Context, assert_clean_for, delete_branch_and_worktree, normalize_subdir, subrepo_branch,
-    subrepo_fetch,
+    subrepo_fetch_with_pb,
 };
 use crate::encode::encode_subdir;
 use crate::git_utils::{run_git, try_run_git};
 use crate::gitrepo::read_gitrepo;
 use anyhow::Result;
 
+/// Data produced by the parallel prepare phase; consumed by the sequential commit phase.
+pub struct PullPrepared {
+    pub subdir: String,
+    pub subref: String,
+    pub branch_name: String,
+    pub upstream_head: String,
+    pub remote: String,
+    pub branch: String,
+    pub join_method: String,
+    pub commit_msg: String,
+    pub update_remote: Option<String>,
+    pub update_branch: Option<String>,
+}
+
+/// Full single-subrepo pull (used when not --all).
 #[allow(clippy::too_many_arguments)]
 pub fn run(
     subdir: String,
@@ -23,6 +38,41 @@ pub fn run(
     ctx.quiet = quiet;
     assert_clean_for("pull", &ctx)?;
 
+    if let Some(prepared) = prepare(
+        &ctx,
+        subdir,
+        branch_override,
+        remote_override,
+        force,
+        method,
+        quiet,
+        update,
+        message,
+        edit,
+        None,
+    )? {
+        commit_prepared(&ctx, prepared, quiet)?;
+    }
+    Ok(())
+}
+
+/// Phase 1 (parallelisable): fetch upstream, create subrepo branch, rebase in worktree.
+/// Returns None when the subrepo is already up-to-date.
+/// `pb`: optional caller-owned spinner to reuse (avoids double spinners in --all mode).
+#[allow(clippy::too_many_arguments)]
+pub fn prepare(
+    ctx: &Context,
+    subdir: String,
+    branch_override: Option<String>,
+    remote_override: Option<String>,
+    force: bool,
+    method: Option<String>,
+    quiet: bool,
+    update: bool,
+    message: Option<String>,
+    edit: bool,
+    pb: Option<indicatif::ProgressBar>,
+) -> Result<Option<PullPrepared>> {
     let subdir = normalize_subdir(&subdir);
     let subref = encode_subdir(&subdir);
 
@@ -35,7 +85,6 @@ pub fn run(
     let override_remote = remote_override.clone();
     let override_branch = branch_override.clone();
 
-    // Apply overrides
     if let Some(r) = remote_override {
         cfg.remote = r;
     }
@@ -46,24 +95,23 @@ pub fn run(
         cfg.method = m;
     }
 
-    // Fetch upstream
-    let upstream_head = subrepo_fetch(&ctx, &cfg.remote, &cfg.branch, &subref)?;
+    let upstream_head = subrepo_fetch_with_pb(ctx, &cfg.remote, &cfg.branch, &subref, pb.as_ref())?;
 
-    // Check if up to date (and not force)
     if upstream_head == cfg.commit && !force && !update {
-        println!("Subrepo '{subdir}' is up to date.");
-        return Ok(());
+        if !quiet {
+            println!("Subrepo '{subdir}' is up to date.");
+        }
+        return Ok(None);
     }
 
     let branch_name = format!("subrepo/{subref}");
 
-    // Delete existing branch if any
-    delete_branch_and_worktree(&ctx, &subdir, &subref)?;
+    // Delete any existing branch/worktree leftover
+    delete_branch_and_worktree(ctx, &subdir, &subref)?;
 
-    // Create subrepo branch
-    let worktree = subrepo_branch(&ctx, &subdir, &subref, &cfg.parent, &cfg.method, force)?;
+    // Create subrepo branch (expensive; runs in parallel across siblings)
+    let worktree = subrepo_branch(ctx, &subdir, &subref, &cfg.parent, &cfg.method, force)?;
 
-    // Merge upstream fetch into worktree
     let refs_subrepo_fetch = format!("refs/subrepo/{subref}/fetch");
 
     if cfg.method == "rebase" {
@@ -84,7 +132,6 @@ pub fn run(
         }
     }
 
-    // Update branch ref
     run_git(
         &[
             "update-ref",
@@ -94,7 +141,6 @@ pub fn run(
         &ctx.repo_root,
     )?;
 
-    // Commit the merged content
     let commit_msg = match message {
         Some(ref m) => m.clone(),
         None => build_pull_commit_message(
@@ -103,7 +149,7 @@ pub fn run(
             &cfg.remote,
             &cfg.branch,
             &upstream_head,
-            &ctx,
+            ctx,
         ),
     };
     let commit_msg = if edit {
@@ -112,39 +158,52 @@ pub fn run(
         commit_msg
     };
 
-    // Inline commit (like subrepo_commit but with pull-specific logic)
-    let update_remote = if update {
-        override_remote.as_deref()
-    } else {
-        None
-    };
-    let update_branch = if update {
-        override_branch.as_deref()
-    } else {
-        None
-    };
+    Ok(Some(PullPrepared {
+        subdir,
+        subref,
+        branch_name,
+        upstream_head,
+        remote: cfg.remote,
+        branch: cfg.branch,
+        join_method: cfg.method,
+        commit_msg,
+        update_remote: if update { override_remote } else { None },
+        update_branch: if update { override_branch } else { None },
+    }))
+}
+
+/// Phase 2 (sequential): commit the prepared content into the main repo.
+pub fn commit_prepared(ctx: &Context, prepared: PullPrepared, quiet: bool) -> Result<()> {
+    let PullPrepared {
+        ref subdir,
+        ref subref,
+        ref branch_name,
+        ref upstream_head,
+        ref remote,
+        ref branch,
+        ref join_method,
+        ref commit_msg,
+        ref update_remote,
+        ref update_branch,
+    } = prepared;
 
     do_subrepo_commit(
-        &ctx,
-        &subdir,
-        &subref,
-        &branch_name,
-        &cfg.remote,
-        &cfg.branch,
-        &upstream_head,
-        &cfg.method,
-        &commit_msg,
-        update_remote,
-        update_branch,
+        ctx,
+        subdir,
+        subref,
+        branch_name,
+        remote,
+        branch,
+        upstream_head,
+        join_method,
+        commit_msg,
+        update_remote.as_deref(),
+        update_branch.as_deref(),
     )?;
 
     if !quiet {
-        println!(
-            "Subrepo '{subdir}' pulled from '{}' ({}).",
-            cfg.remote, cfg.branch
-        );
+        println!("Subrepo '{subdir}' pulled from '{remote}' ({branch}).");
     }
-
     Ok(())
 }
 
@@ -299,11 +358,7 @@ fn do_subrepo_commit(
     )?;
 
     // Remove worktree
-    let worktree = ctx.worktree_path(subdir);
-    if worktree.exists() {
-        std::fs::remove_dir_all(&worktree)?;
-        try_run_git(&["worktree", "prune"], &ctx.repo_root);
-    }
+    crate::commands::delete_branch_and_worktree(ctx, subdir, subref)?;
 
     Ok(())
 }

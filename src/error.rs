@@ -4,10 +4,7 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum SubrepoError {
-    #[error("{0}")]
-    Git(#[from] git2::Error),
-
-    #[error("{0}")]
+    #[error(transparent)]
     Io(#[from] std::io::Error),
 
     #[error("You can't clone into an empty repository")]

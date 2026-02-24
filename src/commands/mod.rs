@@ -93,39 +93,48 @@ pub fn normalize_subdir(subdir: &str) -> String {
 }
 
 /// Assert that the working copy is clean.
+/// If `subdir` is Some, only checks for changes within that subtree (used by `branch`).
 pub fn assert_clean_for(cmd: &str, ctx: &Context) -> Result<()> {
+    assert_clean_for_subdir(cmd, ctx, None)
+}
+
+pub fn assert_clean_for_subdir(cmd: &str, ctx: &Context, subdir: Option<&str>) -> Result<()> {
     run_git(
         &["update-index", "-q", "--ignore-submodules", "--refresh"],
         &ctx.repo_root,
     )?;
 
-    let (ok1, _) = try_run_git(
-        &["diff-files", "--quiet", "--ignore-submodules"],
-        &ctx.repo_root,
-    );
+    // Build path-limiter args
+    let path_args: Vec<&str> = if let Some(s) = subdir {
+        vec!["--", s]
+    } else {
+        vec![]
+    };
+
+    let mut diff_files_args = vec!["diff-files", "--quiet", "--ignore-submodules"];
+    diff_files_args.extend_from_slice(&path_args);
+    let (ok1, _) = try_run_git(&diff_files_args, &ctx.repo_root);
     if !ok1 {
         anyhow::bail!("Can't {cmd} subrepo. Unstaged changes.");
     }
 
     if !ctx.original_head_commit.is_empty() {
-        let (ok2, _) = try_run_git(
-            &["diff-index", "--quiet", "--ignore-submodules", "HEAD"],
-            &ctx.repo_root,
-        );
+        let mut diff_index_args = vec!["diff-index", "--quiet", "--ignore-submodules", "HEAD"];
+        diff_index_args.extend_from_slice(&path_args);
+        let (ok2, _) = try_run_git(&diff_index_args, &ctx.repo_root);
         if !ok2 {
             anyhow::bail!("Can't {cmd} subrepo. Working tree has changes.");
         }
 
-        let (ok3, _) = try_run_git(
-            &[
-                "diff-index",
-                "--quiet",
-                "--cached",
-                "--ignore-submodules",
-                "HEAD",
-            ],
-            &ctx.repo_root,
-        );
+        let mut diff_cached_args = vec![
+            "diff-index",
+            "--quiet",
+            "--cached",
+            "--ignore-submodules",
+            "HEAD",
+        ];
+        diff_cached_args.extend_from_slice(&path_args);
+        let (ok3, _) = try_run_git(&diff_cached_args, &ctx.repo_root);
         if !ok3 {
             anyhow::bail!("Can't {cmd} subrepo. Index has changes.");
         }
@@ -183,40 +192,54 @@ pub fn build_commit_message(
 /// Perform the subrepo:fetch operation.
 /// Returns the upstream HEAD commit SHA.
 pub fn subrepo_fetch(ctx: &Context, remote: &str, branch: &str, subref: &str) -> Result<String> {
+    subrepo_fetch_with_pb(ctx, remote, branch, subref, None)
+}
+
+/// Like `subrepo_fetch` but reuses an existing `ProgressBar` from the caller (e.g. `--all` loop).
+pub fn subrepo_fetch_with_pb(
+    ctx: &Context,
+    remote: &str,
+    branch: &str,
+    subref: &str,
+    caller_pb: Option<&indicatif::ProgressBar>,
+) -> Result<String> {
     use indicatif::{ProgressBar, ProgressStyle};
 
-    let pb = if !ctx.quiet {
-        let pb = ProgressBar::new_spinner();
-        pb.set_style(
+    // If the caller already owns a spinner, update its message instead of creating a new one.
+    let owned_pb: Option<ProgressBar>;
+    let pb: Option<&ProgressBar> = if let Some(pb) = caller_pb {
+        pb.set_message(format!("Fetching {remote} ({branch})..."));
+        None // we don't own it
+    } else if !ctx.quiet {
+        let p = ProgressBar::new_spinner();
+        p.set_style(
             ProgressStyle::default_spinner()
                 .template("{spinner:.cyan} {msg}")
                 .unwrap(),
         );
-        pb.set_message(format!("Fetching {remote} ({branch})..."));
-        pb.enable_steady_tick(std::time::Duration::from_millis(80));
-        Some(pb)
+        p.set_message(format!("Fetching {remote} ({branch})..."));
+        p.enable_steady_tick(std::time::Duration::from_millis(80));
+        owned_pb = Some(p);
+        owned_pb.as_ref()
     } else {
+        owned_pb = None;
         None
     };
 
+    // Fetch directly into the per-subrepo ref to avoid FETCH_HEAD race in parallel fetches.
+    let fetch_ref = format!("refs/subrepo/{subref}/fetch");
+    let refspec = format!("+{branch}:{fetch_ref}");
     let fetch_result = run_git(
-        &["fetch", "--no-tags", "--quiet", remote, branch],
+        &["fetch", "--no-tags", "--quiet", remote, &refspec],
         &ctx.repo_root,
     );
-    if let Some(ref pb) = pb {
-        pb.finish_and_clear();
+    // Only finish/clear if we own the bar (not the caller's bar)
+    if let Some(p) = pb {
+        p.finish_and_clear();
     }
     fetch_result?;
 
-    let upstream_head = run_git(&["rev-parse", "FETCH_HEAD^0"], &ctx.repo_root)?;
-    run_git(
-        &[
-            "update-ref",
-            &format!("refs/subrepo/{subref}/fetch"),
-            &upstream_head,
-        ],
-        &ctx.repo_root,
-    )?;
+    let upstream_head = run_git(&["rev-parse", &fetch_ref], &ctx.repo_root)?;
 
     Ok(upstream_head)
 }
@@ -255,6 +278,7 @@ pub fn subrepo_branch(
             subrepo_parent,
             join_method,
             &branch_name,
+            force,
         )?;
     }
 
@@ -323,6 +347,7 @@ fn subrepo_branch_with_parent(
     subrepo_parent: &str,
     join_method: &str,
     branch_name: &str,
+    force: bool,
 ) -> Result<()> {
     // Check if subrepo_parent is an ancestor of HEAD (handles rebase case)
     let (is_ancestor, _) = try_run_git(
@@ -400,8 +425,9 @@ fn subrepo_branch_with_parent(
             continue;
         }
 
-        // Check that gitrepo_commit is reachable from the fetch ref
-        if rev_exists(&refs_subrepo_fetch, &ctx.repo_root)
+        // Check that gitrepo_commit is reachable from the fetch ref (skipped with --force)
+        if !force
+            && rev_exists(&refs_subrepo_fetch, &ctx.repo_root)
             && !commit_in_rev_list(&gitrepo_commit, &refs_subrepo_fetch, &ctx.repo_root)
         {
             anyhow::bail!(
@@ -549,16 +575,28 @@ fn subrepo_branch_with_parent(
 pub fn delete_branch_and_worktree(ctx: &Context, subdir: &str, subref: &str) -> Result<()> {
     let branch_name = format!("subrepo/{subref}");
     let worktree = ctx.worktree_path(subdir);
+    let worktree_str = worktree.to_string_lossy().to_string();
 
-    // Remove worktree if it exists
+    // Try git worktree remove --force first (removes dir + unregisters from git's metadata).
+    // This must happen BEFORE branch deletion because git refuses to delete a branch
+    // that is currently checked out in any worktree.
+    try_run_git(
+        &["worktree", "remove", "--force", &worktree_str],
+        &ctx.repo_root,
+    );
+
+    // If the directory is still present (e.g. worktree remove wasn't registered), remove it.
     if worktree.exists() {
-        std::fs::remove_dir_all(&worktree)?;
-        try_run_git(&["worktree", "prune"], &ctx.repo_root);
+        let _ = std::fs::remove_dir_all(&worktree);
     }
 
-    // Delete branch if it exists
+    // Always prune to clean up any stale worktree metadata in .git/worktrees/
+    try_run_git(&["worktree", "prune"], &ctx.repo_root);
+
+    // Force-delete branch via update-ref so it works even if git thinks it's checked out.
     if branch_exists(&branch_name, &ctx.repo_root) {
-        try_run_git(&["branch", "-D", &branch_name], &ctx.repo_root);
+        let branch_ref = format!("refs/heads/{branch_name}");
+        run_git(&["update-ref", "-d", &branch_ref], &ctx.repo_root)?;
     }
 
     Ok(())
@@ -702,11 +740,7 @@ pub fn subrepo_commit(
     )?;
 
     // Remove worktree
-    let worktree = ctx.worktree_path(subdir);
-    if worktree.exists() {
-        std::fs::remove_dir_all(&worktree)?;
-        try_run_git(&["worktree", "prune"], &ctx.repo_root);
-    }
+    delete_branch_and_worktree(ctx, subdir, subref)?;
 
     Ok(())
 }
