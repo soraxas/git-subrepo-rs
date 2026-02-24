@@ -46,7 +46,7 @@ clone-foo-and-bar
 ) &> /dev/null || die
 
 # Force subrepo to search of the parent SHA,
-# validate it found the prevous merge point
+# validate it found the previous merge point
 {
     output=$(
       cd "$OWNER/foo"

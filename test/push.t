@@ -142,7 +142,7 @@ test-exists \
   # Test the output:
   is "$message" \
     "Subrepo 'bar' pushed to '$UPSTREAM/bar' (master)." \
-    'Seqential pushes are correct'
+    'Sequential pushes are correct'
 }
 
 (
