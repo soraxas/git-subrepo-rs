@@ -128,6 +128,9 @@ pub enum Commands {
         quiet: bool,
         #[arg(short = 'v', long)]
         verbose: bool,
+        /// Show unpushed commit count per subrepo (commits in main repo touching the subdir since last pull)
+        #[arg(short = 'd', long)]
+        dirty: bool,
     },
     Clean {
         subdir: Option<String>,

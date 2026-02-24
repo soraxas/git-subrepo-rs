@@ -206,10 +206,9 @@ pub fn subrepo_fetch_with_pb(
     use indicatif::{ProgressBar, ProgressStyle};
 
     // If the caller already owns a spinner, update its message instead of creating a new one.
-    let owned_pb: Option<ProgressBar>;
-    let pb: Option<&ProgressBar> = if let Some(pb) = caller_pb {
+    let owned_pb = if let Some(pb) = caller_pb {
         pb.set_message(format!("Fetching {remote} ({branch})..."));
-        None // we don't own it
+        None
     } else if !ctx.quiet {
         let p = ProgressBar::new_spinner();
         p.set_style(
@@ -219,10 +218,8 @@ pub fn subrepo_fetch_with_pb(
         );
         p.set_message(format!("Fetching {remote} ({branch})..."));
         p.enable_steady_tick(std::time::Duration::from_millis(80));
-        owned_pb = Some(p);
-        owned_pb.as_ref()
+        Some(p)
     } else {
-        owned_pb = None;
         None
     };
 
@@ -234,7 +231,7 @@ pub fn subrepo_fetch_with_pb(
         &ctx.repo_root,
     );
     // Only finish/clear if we own the bar (not the caller's bar)
-    if let Some(p) = pb {
+    if let Some(p) = owned_pb {
         p.finish_and_clear();
     }
     fetch_result?;

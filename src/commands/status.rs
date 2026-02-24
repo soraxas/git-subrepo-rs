@@ -12,6 +12,7 @@ pub fn run(
     _fetch: bool,
     all: bool,
     all_all: bool,
+    dirty: bool,
 ) -> Result<()> {
     let ctx = Context::new()?;
 
@@ -107,6 +108,10 @@ pub fn run(
             );
         }
 
+        if dirty || verbose {
+            print_dirty_status(&ctx, subdir, &cfg.parent);
+        }
+
         if verbose {
             print_status_refs(&ctx, subref.as_str());
         }
@@ -151,6 +156,53 @@ fn get_all_subrepos(ctx: &Context, _all: bool, all_all: bool) -> Result<Vec<Stri
     }
 
     Ok(result)
+}
+
+/// Count commits in the main repo touching `subdir/` since the last pull (parent commit).
+/// Prints a colored line showing how many unpushed commits exist.
+fn print_dirty_status(ctx: &Context, subdir: &str, parent: &str) {
+    // Commits reachable from HEAD that touch subdir/ but are not reachable from `parent`
+    // (i.e. were made locally since the last pull/clone).
+    let range = if parent.is_empty() {
+        "HEAD".to_string()
+    } else {
+        format!("{parent}..HEAD")
+    };
+    let subdir_path = format!("{subdir}/");
+    let (ok, out) = try_run_git(
+        &["log", "--oneline", &range, "--", &subdir_path],
+        &ctx.repo_root,
+    );
+    if !ok {
+        return;
+    }
+    let commits: Vec<&str> = out.lines().filter(|l| !l.is_empty()).collect();
+    let n = commits.len();
+    if n == 0 {
+        println!(
+            "  {}  {}",
+            "Unpushed:       ".bold().green(),
+            "none".dimmed()
+        );
+    } else {
+        let label = if n == 1 {
+            format!("{n} unpushed commit").yellow().bold().to_string()
+        } else {
+            format!("{n} unpushed commits").yellow().bold().to_string()
+        };
+        println!(
+            "  {}  {} — run: {}",
+            "Unpushed:       ".bold().green(),
+            label,
+            format!("git subrepo push {subdir}").bright_cyan()
+        );
+        for line in commits.iter().take(5) {
+            println!("    {}", line.dimmed());
+        }
+        if n > 5 {
+            println!("    {} …and {} more", "".dimmed(), (n - 5).to_string().dimmed());
+        }
+    }
 }
 
 fn print_status_refs(ctx: &Context, subref: &str) {

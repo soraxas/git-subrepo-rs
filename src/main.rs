@@ -93,50 +93,90 @@ fn group_by_depth(subrepos: Vec<String>) -> Vec<Vec<String>> {
 }
 
 /// Run a blocking operation on each subrepo in parallel within each depth level.
-/// Prints "[idx/total] {verb_start} 'X'..." and "[idx/total] {verb_done} 'X'" for each.
-/// Errors are printed inline; the function only fails on tokio join errors.
+/// Each task gets its own spinner in a shared `MultiProgress`; completion messages
+/// are printed via `mp.println()` so they never interleave with spinner output.
 async fn run_all_parallel(
     levels: Vec<Vec<String>>,
     total: usize,
     quiet: bool,
     verb_start: &'static str,
-    verb_done: &'static str,
-    f: impl Fn(String) -> anyhow::Result<()> + Send + Sync + Clone + 'static,
+    f: impl Fn(String, indicatif::ProgressBar) -> anyhow::Result<String>
+        + Send
+        + Sync
+        + Clone
+        + 'static,
 ) -> anyhow::Result<()> {
+    use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+    use std::time::Duration;
+
+    let mp = if quiet {
+        None
+    } else {
+        Some(MultiProgress::new())
+    };
+
     let mut idx = 0usize;
     for level in levels {
-        let mut set: tokio::task::JoinSet<anyhow::Result<(usize, String)>> =
-            tokio::task::JoinSet::new();
+        let mut set: tokio::task::JoinSet<anyhow::Result<()>> = tokio::task::JoinSet::new();
         for s in level {
             idx += 1;
             let cur_idx = idx;
-            if !quiet {
-                eprintln!(
-                    "{}",
-                    format!("[{cur_idx}/{total}] {verb_start} '{s}'...").bright_cyan()
+
+            // Create a spinner for this subrepo (or a hidden no-op bar in quiet mode).
+            let pb = if let Some(ref m) = mp {
+                let bar = m.add(ProgressBar::new_spinner());
+                bar.set_style(
+                    ProgressStyle::default_spinner()
+                        .template("{spinner:.cyan} {msg}")
+                        .unwrap(),
                 );
-            }
-            let s_clone = s.clone();
+                bar.set_message(
+                    format!("[{cur_idx}/{total}] {verb_start} '{s}'...").bright_cyan().to_string(),
+                );
+                bar.enable_steady_tick(Duration::from_millis(80));
+                bar
+            } else {
+                ProgressBar::hidden()
+            };
+
             let f_clone = f.clone();
+            let mp_clone = mp.clone();
+            let s_clone = s.clone();
+
             set.spawn(async move {
-                tokio::task::spawn_blocking(move || f_clone(s_clone).map(|_| (cur_idx, s)))
+                let pb_clone = pb.clone();
+                let result = tokio::task::spawn_blocking(move || f_clone(s_clone, pb_clone))
                     .await
-                    .unwrap_or_else(|e| Err(anyhow::anyhow!("task panicked: {e}")))
+                    .unwrap_or_else(|e| Err(anyhow::anyhow!("task panicked: {e}")));
+
+                pb.finish_and_clear();
+
+                match result {
+                    Ok(msg) => {
+                        if let Some(ref m) = mp_clone {
+                            let _ = m.println(&msg);
+                        }
+                        Ok(())
+                    }
+                    Err(e) => {
+                        let err_line =
+                            format!("{}: {e}", "git-subrepo".red().bold());
+                        if let Some(ref m) = mp_clone {
+                            let _ = m.println(err_line);
+                        } else {
+                            eprintln!("{}: {e}", "git-subrepo".red().bold());
+                        }
+                        Ok(()) // don't abort the whole set on one error
+                    }
+                }
             });
         }
         while let Some(res) = set.join_next().await {
-            match res? {
-                Ok((cur_idx, s)) => {
-                    if !quiet {
-                        eprintln!(
-                            "{}",
-                            format!("[{cur_idx}/{total}] {verb_done} '{s}'").green()
-                        );
-                    }
-                }
-                Err(e) => eprintln!("{}: {e}", "git-subrepo".red().bold()),
-            }
+            res??;
         }
+    }
+    if let Some(m) = mp {
+        let _ = m.clear();
     }
     Ok(())
 }
@@ -577,15 +617,21 @@ async fn main() {
                     let branch_cap = branch.clone();
                     let remote_cap = remote.clone();
                     let q_cap = q;
-                    run_all_parallel(levels, total, quiet || q, "Fetching", "Fetched", move |s| {
-                        commands::fetch::run(s, branch_cap.clone(), remote_cap.clone(), q_cap)
+                    run_all_parallel(levels, total, quiet || q, "Fetching", move |s, pb| {
+                        commands::fetch::run_with_pb(
+                            s.clone(),
+                            branch_cap.clone(),
+                            remote_cap.clone(),
+                            q_cap,
+                            Some(pb),
+                        )
                     })
                     .await?;
                     Ok(())
                 } else {
                     let subdir = subdir
                         .ok_or_else(|| anyhow::anyhow!("Command 'fetch' requires arg 'subdir'."))?;
-                    commands::fetch::run(subdir, branch, remote, quiet || q)
+                    commands::fetch::run(subdir, branch, remote, quiet || q).map(|_| ())
                 }
             }
             Some(Commands::Branch { subdir, quiet: q }) => {
@@ -633,14 +679,17 @@ async fn main() {
                 subdir,
                 quiet: q,
                 verbose: v,
-            }) => commands::status::run(subdir, quiet || q, verbose || v, fetch, all, all_all),
+                dirty,
+            }) => commands::status::run(subdir, quiet || q, verbose || v, fetch, all, all_all, dirty),
             Some(Commands::Clean { subdir, quiet: q }) => {
                 if (all || all_all) && subdir.is_none() {
                     let subrepos = get_all_subrepos(all_all)?;
                     let total = subrepos.len();
                     let levels = group_by_depth(subrepos);
-                    run_all_parallel(levels, total, quiet || q, "Cleaning", "Cleaned", move |s| {
-                        commands::clean::run(Some(s), force, true)
+                    run_all_parallel(levels, total, quiet || q, "Cleaning", move |s, _pb| {
+                        let subdir = s.clone();
+                        commands::clean::run(Some(s), force, true)?;
+                        Ok(format!("{}", format!("Cleaned '{subdir}'").green()))
                     })
                     .await?;
                     Ok(())
