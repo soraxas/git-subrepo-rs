@@ -6,6 +6,7 @@ use crate::git_utils::{commit_in_rev_list, rev_parse, run_git, try_run_git};
 use crate::gitrepo::read_gitrepo;
 use anyhow::Result;
 
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     subdir: String,
     branch_arg: Option<String>,
@@ -201,6 +202,7 @@ fn subrepo_fetch_allow_fail(
     Ok(upstream_head)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn update_gitrepo_after_push(
     ctx: &Context,
     subdir: &str,

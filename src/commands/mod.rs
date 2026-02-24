@@ -141,6 +141,7 @@ pub fn assert_clean(ctx: &Context) -> Result<()> {
 }
 
 /// Build the commit message for a subrepo operation.
+#[allow(clippy::too_many_arguments)]
 pub fn build_commit_message(
     command: &str,
     subdir: &str,
@@ -148,7 +149,7 @@ pub fn build_commit_message(
     remote: &str,
     branch: &str,
     upstream_head_commit: &str,
-    repo_root: &PathBuf,
+    repo_root: &std::path::Path,
 ) -> String {
     let merged = if !subrepo_commit_ref.is_empty() && rev_exists(subrepo_commit_ref, repo_root) {
         let (ok, out) = try_run_git(&["rev-parse", "--short", subrepo_commit_ref], repo_root);
@@ -539,6 +540,7 @@ pub fn delete_branch_and_worktree(ctx: &Context, subdir: &str, subref: &str) -> 
 }
 
 /// Perform the subrepo:commit operation.
+#[allow(clippy::too_many_arguments)]
 pub fn subrepo_commit(
     ctx: &Context,
     subdir: &str,

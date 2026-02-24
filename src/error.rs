@@ -1,6 +1,7 @@
+#![allow(dead_code)]
+
 use thiserror::Error;
 
-#[allow(dead_code)]
 #[derive(Debug, Error)]
 pub enum SubrepoError {
     #[error("{0}")]
@@ -104,12 +105,10 @@ pub enum SubrepoError {
     General(String),
 }
 
-#[allow(dead_code)]
 impl SubrepoError {
     pub fn general(msg: impl Into<String>) -> Self {
         SubrepoError::General(msg.into())
     }
 }
 
-#[allow(dead_code)]
 pub type SubrepoResult<T> = Result<T, SubrepoError>;

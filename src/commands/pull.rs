@@ -7,6 +7,7 @@ use crate::git_utils::{run_git, try_run_git};
 use crate::gitrepo::read_gitrepo;
 use anyhow::Result;
 
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     subdir: String,
     branch_override: Option<String>,
@@ -184,6 +185,7 @@ fn build_pull_commit_message(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn do_subrepo_commit(
     ctx: &Context,
     subdir: &str,

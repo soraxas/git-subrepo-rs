@@ -41,6 +41,7 @@ pub fn read_gitrepo(path: &Path, repo_root: &Path) -> Result<GitrepoConfig> {
 }
 
 /// Write a new .gitrepo file with the standard header, then set values via git config.
+#[allow(clippy::too_many_arguments)]
 pub fn write_new_gitrepo(
     path: &Path,
     remote: &str,
@@ -58,6 +59,7 @@ pub fn write_new_gitrepo(
 }
 
 /// Update an existing .gitrepo file (preserves header, updates values).
+#[allow(clippy::too_many_arguments)]
 pub fn update_gitrepo(
     path: &Path,
     remote: Option<&str>, // None = don't update
@@ -103,6 +105,7 @@ pub fn update_gitrepo(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn set_gitrepo_values(
     path: &Path,
     remote: &str,
