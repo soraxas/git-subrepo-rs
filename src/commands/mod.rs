@@ -4,6 +4,7 @@ pub mod clone;
 pub mod commit_cmd;
 pub mod config;
 pub mod fetch;
+pub mod fix;
 pub mod init;
 pub mod pull;
 pub mod push;
@@ -141,7 +142,19 @@ pub fn assert_clean_for_subdir(cmd: &str, ctx: &Context, subdir: Option<&str>) -
     diff_files_args.extend_from_slice(&path_args);
     let (ok1, _) = try_run_git(&diff_files_args, &ctx.repo_root);
     if !ok1 {
-        anyhow::bail!("Can't {cmd} subrepo. Unstaged changes.");
+        // Allow through if the only dirty files are .gitrepo files
+        // (e.g. after `git subrepo fix` updated parent= without staging).
+        let (_, dirty_out) = try_run_git(
+            &["diff-files", "--name-only", "--ignore-submodules"],
+            &ctx.repo_root,
+        );
+        let non_gitrepo_dirty = dirty_out
+            .lines()
+            .filter(|l| !l.trim().is_empty() && !l.ends_with("/.gitrepo"))
+            .count();
+        if non_gitrepo_dirty > 0 {
+            anyhow::bail!("Can't {cmd} subrepo. Unstaged changes.");
+        }
     }
 
     if !ctx.original_head_commit.is_empty() {
@@ -373,7 +386,7 @@ pub fn subrepo_branch(
         subrepo_branch_no_parent(ctx, subdir, subref, &branch_name)?;
     } else {
         // Has parent: build commit chain
-        subrepo_branch_with_parent(
+        match subrepo_branch_with_parent(
             ctx,
             subdir,
             subref,
@@ -381,7 +394,26 @@ pub fn subrepo_branch(
             join_method,
             &branch_name,
             force,
-        )?;
+        ) {
+            Ok(()) => {}
+            Err(e) if e.to_string() == "no_commits" => {
+                // parent == HEAD: no local subrepo commits to replay.
+                // Create the branch pointing directly at the upstream fetch ref so
+                // the merge/rebase step in pull can proceed normally.
+                let fetch_ref = format!("refs/subrepo/{subref}/fetch");
+                let (ok, fetch_sha) = try_run_git(&["rev-parse", &fetch_ref], &ctx.repo_root);
+                if ok && !fetch_sha.trim().is_empty() {
+                    crate::git_utils::run_git(
+                        &["branch", &branch_name, fetch_sha.trim()],
+                        &ctx.repo_root,
+                    )?;
+                } else {
+                    // fetch ref not available yet — fall back to no_parent path
+                    subrepo_branch_no_parent(ctx, subdir, subref, &branch_name)?;
+                }
+            }
+            Err(e) => return Err(e),
+        }
     }
 
     let worktree = ctx.worktree_path(subdir);
@@ -449,26 +481,145 @@ fn subrepo_branch_no_parent(
     Ok(())
 }
 
-/// Find the effective new parent after a rebase.
-///
-/// Primary: look for the most recent commit in HEAD history that changed the
-/// `commit =` line in `<subdir>/.gitrepo`.  That commit is the rebased subrepo
-/// pull commit; its parent is the rebased equivalent of the stored parent and
-/// is guaranteed to be reachable from HEAD.
-///
-/// Fallback: walk the last 500 commits and compare each commit's `<subdir>`
-/// tree SHA against the tree SHA stored parent had, using a single
-/// `git cat-file --batch-check` call.
-fn find_new_parent_after_rebase(
+#[derive(Debug)]
+enum ParentCleanness {
+    /// Subdir tree objects are identical (compared against `reference`).
+    Identical { reference: String },
+    /// Only .gitrepo differs (compared against `reference`).
+    OnlyGitrepo { reference: String },
+    /// Real files differ — list of changed paths.
+    Modified {
+        reference: String,
+        files: Vec<String>,
+    },
+    /// Could not determine (object unavailable etc.).
+    Unknown,
+}
+
+/// Compare `<candidate>:<subdir>` tree against `<ref_commit>:<subdir>` tree.
+/// If `stored_parent` is unavailable locally (rebased away), falls back to HEAD.
+fn check_parent_cleanliness(
     ctx: &Context,
     subdir: &str,
     stored_parent: &str,
+    candidate: &str,
+) -> ParentCleanness {
+    // Determine reference: prefer stored_parent, fall back to HEAD.
+    let (ref_commit, ref_label) = {
+        let (ok, _) = try_run_git(&["rev-parse", "--verify", stored_parent], &ctx.repo_root);
+        if ok {
+            (stored_parent.to_string(), "stored parent".to_string())
+        } else {
+            (
+                "HEAD".to_string(),
+                "HEAD (stored parent no longer exists locally)".to_string(),
+            )
+        }
+    };
+
+    let (ok_a, tree_a) = try_run_git(
+        &["rev-parse", &format!("{ref_commit}:{subdir}")],
+        &ctx.repo_root,
+    );
+    let (ok_b, tree_b) = try_run_git(
+        &["rev-parse", &format!("{candidate}:{subdir}")],
+        &ctx.repo_root,
+    );
+    if !ok_a || !ok_b {
+        return ParentCleanness::Unknown;
+    }
+    let tree_a = tree_a.trim();
+    let tree_b = tree_b.trim();
+
+    if tree_a == tree_b {
+        return ParentCleanness::Identical {
+            reference: ref_label,
+        };
+    }
+
+    let (ok, diff) = try_run_git(
+        &[
+            "diff-tree",
+            "--no-commit-id",
+            "-r",
+            "--name-only",
+            tree_a,
+            tree_b,
+        ],
+        &ctx.repo_root,
+    );
+    if !ok {
+        return ParentCleanness::Unknown;
+    }
+
+    let changed: Vec<String> = diff
+        .lines()
+        .filter(|l| !l.trim().is_empty() && l.trim() != ".gitrepo")
+        .map(|l| l.to_string())
+        .collect();
+
+    if changed.is_empty() {
+        ParentCleanness::OnlyGitrepo {
+            reference: ref_label,
+        }
+    } else {
+        ParentCleanness::Modified {
+            reference: ref_label,
+            files: changed,
+        }
+    }
+}
+
+/// Given a subdir path, return the outer subrepo that contains it (if any).
+/// e.g. `task-engine/datamodel` → `Some("task-engine")` if `task-engine/.gitrepo` exists.
+/// The parent commit in a nested subrepo's .gitrepo refers to a commit in the *outer*
+/// subrepo's upstream history, not the main repo's HEAD.
+pub(super) fn find_outer_subrepo(ctx: &Context, subdir: &str) -> Option<String> {
+    let mut path = subdir;
+    while let Some(pos) = path.rfind('/') {
+        path = &path[..pos];
+        let candidate = ctx.repo_root.join(path).join(".gitrepo");
+        if candidate.exists() {
+            return Some(path.to_string());
+        }
+    }
+    None
+}
+
+/// Return the ref to use as the "history root" for parent-ancestry checks.
+/// For a nested subrepo inside `outer`, use `refs/subrepo/<outer>/branch`.
+/// For a top-level subrepo (or if the outer ref doesn't exist), use `HEAD`.
+pub(super) fn parent_check_ref(ctx: &Context, subdir: &str) -> String {
+    if let Some(outer) = find_outer_subrepo(ctx, subdir) {
+        let branch_ref = format!("refs/subrepo/{outer}/branch");
+        let (ok, _) = try_run_git(&["rev-parse", "--verify", &branch_ref], &ctx.repo_root);
+        if ok {
+            return branch_ref;
+        }
+        // outer branch ref doesn't exist locally — fall back to HEAD
+    }
+    "HEAD".to_string()
+}
+
+/// `commit =` line in `<subdir>/.gitrepo`.  That commit is the rebased subrepo
+/// pull commit; its parent is the rebased equivalent of the stored parent and
+/// is guaranteed to be reachable from the history root (`check_ref`).
+///
+/// For nested subrepos, `check_ref` is `refs/subrepo/<outer>/branch`; for
+/// top-level subrepos it is `HEAD`.
+pub(super) fn find_new_parent_after_rebase(
+    ctx: &Context,
+    subdir: &str,
+    _stored_parent: &str,
+    check_ref: &str,
 ) -> Option<String> {
-    // --- Primary: find the rebased pull commit via .gitrepo log ---
+    // --- Primary: find the most-recent commit in check_ref history that
+    // changed `commit =` in the subdir's .gitrepo ---
     let gitrepo_rel = format!("{subdir}/.gitrepo");
     let (ok, pull_commit) = try_run_git(
         &[
             "log",
+            check_ref,
             "-1",
             "-G",
             "commit =",
@@ -482,51 +633,53 @@ fn find_new_parent_after_rebase(
         let pull_commit = pull_commit.trim();
         let (ok2, parent) = try_run_git(&["rev-parse", &format!("{pull_commit}^")], &ctx.repo_root);
         if ok2 && !parent.trim().is_empty() {
-            return Some(parent.trim().to_string());
+            let parent = parent.trim().to_string();
+            // Sanity check: the candidate should have the subdir already present.
+            let (has_subdir, _) = try_run_git(
+                &["rev-parse", "--verify", &format!("{parent}:{subdir}")],
+                &ctx.repo_root,
+            );
+            if has_subdir {
+                return Some(parent);
+            }
         }
     }
 
-    // --- Fallback: compare subdir tree SHAs ---
-    let (ok, expected_tree) = try_run_git(
-        &["rev-parse", &format!("{stored_parent}:{subdir}")],
+    // --- Fallback: content-walk in check_ref history ---
+    let (ok, log) = try_run_git(
+        &[
+            "log",
+            check_ref,
+            "-1",
+            "--format=%H",
+            "--",
+            subdir,
+            &format!(":(exclude){subdir}/.gitrepo"),
+        ],
         &ctx.repo_root,
     );
-    if !ok || expected_tree.trim().is_empty() {
-        return None;
-    }
-    let expected_tree = expected_tree.trim();
-
-    let (ok, log) = try_run_git(&["log", "--format=%H", "-500"], &ctx.repo_root);
-    if !ok || log.trim().is_empty() {
-        return None;
-    }
-
-    // Batch-check all <commit>:<subdir> tree SHAs in one git cat-file call.
-    use std::io::Write;
-    use std::process::{Command, Stdio};
-
-    let queries: Vec<String> = log.lines().map(|sha| format!("{sha}:{subdir}")).collect();
-    let mut child = Command::new("git")
-        .args(["cat-file", "--batch-check=%(objectname) %(objecttype)"])
-        .current_dir(&ctx.repo_root)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
-
-    let input = queries.join("\n") + "\n";
-    child.stdin.take()?.write_all(input.as_bytes()).ok()?;
-
-    let output = child.wait_with_output().ok()?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
-
-    let commits: Vec<&str> = log.lines().collect();
-    for (commit, line) in commits.iter().zip(stdout.lines()) {
-        let parts: Vec<&str> = line.splitn(2, ' ').collect();
-        if parts.len() == 2 && parts[1].trim() == "tree" && parts[0] == expected_tree {
-            return Some(commit.to_string());
+    if ok && !log.trim().is_empty() {
+        let content_change_commit = log.trim();
+        let (ok2, parent) = try_run_git(
+            &["rev-parse", &format!("{content_change_commit}^")],
+            &ctx.repo_root,
+        );
+        if ok2 && !parent.trim().is_empty() {
+            let parent = parent.trim().to_string();
+            let (has_subdir, _) = try_run_git(
+                &["rev-parse", "--verify", &format!("{parent}:{subdir}")],
+                &ctx.repo_root,
+            );
+            if has_subdir {
+                return Some(parent);
+            }
         }
+    }
+
+    // --- Final fallback: use tip of check_ref ---
+    let (ok, tip) = try_run_git(&["rev-parse", check_ref], &ctx.repo_root);
+    if ok && !tip.trim().is_empty() {
+        return Some(tip.trim().to_string());
     }
 
     None
@@ -541,46 +694,148 @@ fn subrepo_branch_with_parent(
     branch_name: &str,
     force: bool,
 ) -> Result<()> {
-    // Check if subrepo_parent is an ancestor of HEAD (handles rebase case)
+    // For nested subrepos, parent= refers to a commit in the outer subrepo's upstream,
+    // not the main repo's HEAD.  Use the appropriate ref for ancestry checks.
+    let check_ref = parent_check_ref(ctx, subdir);
+    let is_nested = check_ref != "HEAD";
+
     let (is_ancestor, _) = try_run_git(
-        &["merge-base", "--is-ancestor", subrepo_parent, "HEAD"],
+        &["merge-base", "--is-ancestor", subrepo_parent, &check_ref],
         &ctx.repo_root,
     );
 
     if !is_ancestor {
         // Parent is not an ancestor — likely caused by a rebase.
-        // Try to find the new parent: walk recent history for a commit whose
-        // subdir tree matches what the stored parent had.
-        let new_parent = find_new_parent_after_rebase(ctx, subdir, subrepo_parent);
+        let new_parent = find_new_parent_after_rebase(ctx, subdir, subrepo_parent, &check_ref);
 
         let stored_short = &subrepo_parent[..subrepo_parent.len().min(7)];
 
-        // Always print the diagnosis.
+        let history_label = if is_nested {
+            format!("outer subrepo history ({})", check_ref)
+        } else {
+            "HEAD history".to_string()
+        };
+
         eprintln!(
-            "{}: '{}' parent {} is not in HEAD history (caused by a rebase).",
+            "{}: '{}' parent {} is not in {} (caused by a rebase).",
             "git-subrepo".yellow().bold(),
             subdir,
-            stored_short
+            stored_short,
+            history_label
         );
 
         match new_parent {
             Some(ref candidate) => {
                 let candidate_short = &candidate[..candidate.len().min(7)];
-                eprintln!(
-                    "  Found likely new parent: {} (subdir tree matches stored parent's tree)",
-                    candidate_short.green().bold()
+
+                // How far is the candidate from check_ref?
+                let (_, ahead_out) = try_run_git(
+                    &["rev-list", "--count", &format!("{candidate}..{check_ref}")],
+                    &ctx.repo_root,
                 );
+                let commits_ahead: usize = ahead_out.trim().parse().unwrap_or(0);
+
+                // How many subdir files differ between candidate and HEAD (excl .gitrepo)?
+                let (_, diff_out) = try_run_git(
+                    &[
+                        "diff",
+                        "--name-only",
+                        &format!("{candidate}:{subdir}"),
+                        &format!("{check_ref}:{subdir}"),
+                    ],
+                    &ctx.repo_root,
+                );
+                let changed_files: Vec<&str> = diff_out
+                    .lines()
+                    .filter(|l| !l.trim().is_empty() && l.trim() != ".gitrepo")
+                    .collect();
+
+                // Validate: compare candidate's subdir tree with stored parent's subdir tree.
+                let parent_clean = check_parent_cleanliness(ctx, subdir, subrepo_parent, candidate);
+
+                let ref_short = check_ref
+                    .strip_prefix("refs/subrepo/")
+                    .unwrap_or(&check_ref);
+                let commits_str = if commits_ahead == 0 {
+                    format!("📍 {} behind {}", "0 commits".green().bold(), ref_short)
+                } else {
+                    format!(
+                        "📍 {} behind {}",
+                        format!("{commits_ahead} commits").yellow().bold(),
+                        ref_short
+                    )
+                };
+                let files_str = if changed_files.is_empty() {
+                    format!("📂 {}", "0 files differ".green().bold())
+                } else {
+                    format!(
+                        "📂 {}",
+                        format!("{} files differ", changed_files.len())
+                            .yellow()
+                            .bold()
+                    )
+                };
                 eprintln!(
-                    "  Run: git subrepo config {} parent {}  to repair, then retry.",
+                    "  Found likely new parent: {}  ({},  {})",
+                    candidate_short.green().bold(),
+                    commits_str,
+                    files_str,
+                );
+                if !changed_files.is_empty() {
+                    for f in changed_files.iter().take(5) {
+                        eprintln!("      {}", f.dimmed());
+                    }
+                    if changed_files.len() > 5 {
+                        eprintln!("      … and {} more", changed_files.len() - 5);
+                    }
+                }
+                match &parent_clean {
+                    ParentCleanness::Identical { reference } => {
+                        eprintln!("  {}", format!("✓ Likely clean — subdir content is identical to {reference} (safe to auto-repair)").green());
+                    }
+                    ParentCleanness::OnlyGitrepo { reference } => {
+                        eprintln!("  {}", format!("✓ Likely clean — only .gitrepo differs vs {reference} (safe to auto-repair)").green());
+                    }
+                    ParentCleanness::Modified { reference, files } => {
+                        eprintln!(
+                            "  {} — {} file(s) differ vs {}:",
+                            "⚠ Content likely differs".yellow().bold(),
+                            files.len(),
+                            reference
+                        );
+                        for f in files.iter().take(10) {
+                            eprintln!("      {}", f.dimmed());
+                        }
+                        if files.len() > 10 {
+                            eprintln!("      … and {} more", files.len() - 10);
+                        }
+                    }
+                    ParentCleanness::Unknown => {
+                        eprintln!(
+                            "  {}",
+                            "(could not resolve subdir trees for comparison)".dimmed()
+                        );
+                    }
+                }
+                eprintln!(
+                    "  Repair hint: git subrepo config {} parent {}",
                     subdir, candidate_short
                 );
                 eprintln!();
 
                 // Try interactive prompt — gracefully skip if no TTY.
                 use dialoguer::Select;
+                let force_label = if is_nested {
+                    format!(
+                        "Force: reset parent to tip of {} (discards local divergence)",
+                        ref_short
+                    )
+                } else {
+                    "Force: reset parent to HEAD (discards local divergence)".to_string()
+                };
                 let choices = &[
                     format!("Auto-repair: use {} as new parent", candidate_short),
-                    "Force: reset parent to HEAD (discards local divergence)".to_string(),
+                    force_label,
                     "Abort".to_string(),
                 ];
                 let selection = Select::with_theme(&dialoguer::theme::ColorfulTheme::default())
@@ -614,14 +869,14 @@ fn subrepo_branch_with_parent(
                         );
                     }
                     Ok(Some(1)) => {
-                        // Force: treat HEAD as the parent
-                        let (_, head) = try_run_git(&["rev-parse", "HEAD"], &ctx.repo_root);
-                        let head = head.trim().to_string();
+                        // Force: treat tip of check_ref as the parent
+                        let (_, tip) = try_run_git(&["rev-parse", &check_ref], &ctx.repo_root);
+                        let tip = tip.trim().to_string();
                         return subrepo_branch_with_parent(
                             ctx,
                             subdir,
                             subref,
-                            &head,
+                            &tip,
                             join_method,
                             branch_name,
                             force,
@@ -639,8 +894,8 @@ fn subrepo_branch_with_parent(
             }
             None => {
                 anyhow::bail!(
-                    "No matching commit found in the last 500 commits. \
-                     Use `--force` to treat HEAD as the new parent.",
+                    "No matching commit found. Use `--force` to treat {} as the new parent.",
+                    if is_nested { &check_ref } else { "HEAD" }
                 );
             }
         }

@@ -56,8 +56,6 @@ pub enum Commands {
         branch: Option<String>,
         #[arg(short = 'M', long)]
         method: Option<String>,
-        #[arg(short = 'q', long)]
-        quiet: bool,
         #[arg(short = 'm', long)]
         message: Option<String>,
         /// Stage changes but do not commit (skip commit step entirely)
@@ -83,8 +81,6 @@ pub enum Commands {
         remote: Option<String>,
         #[arg(short = 'M', long)]
         method: Option<String>,
-        #[arg(short = 'q', long)]
-        quiet: bool,
         #[arg(short = 'u', long)]
         update: bool,
         #[arg(short = 'm', long)]
@@ -103,8 +99,6 @@ pub enum Commands {
         method: Option<String>,
         #[arg(short = 's', long)]
         squash: bool,
-        #[arg(short = 'q', long)]
-        quiet: bool,
         #[arg(short = 'u', long)]
         update: bool,
         #[arg(short = 'm', long)]
@@ -116,28 +110,18 @@ pub enum Commands {
         branch: Option<String>,
         #[arg(short = 'r', long)]
         remote: Option<String>,
-        #[arg(short = 'q', long)]
-        quiet: bool,
     },
     Branch {
         subdir: Option<String>,
-        #[arg(short = 'q', long)]
-        quiet: bool,
     },
     Commit {
         subdir: String,
         subrepo_commit_ref: Option<String>,
-        #[arg(short = 'q', long)]
-        quiet: bool,
         #[arg(short = 'm', long)]
         message: Option<String>,
     },
     Status {
         subdir: Option<String>,
-        #[arg(short = 'q', long)]
-        quiet: bool,
-        #[arg(short = 'v', long)]
-        verbose: bool,
         /// Skip showing unpushed commits and upstream diff (shown by default)
         #[arg(long)]
         no_dirty: bool,
@@ -147,8 +131,6 @@ pub enum Commands {
     },
     Clean {
         subdir: Option<String>,
-        #[arg(short = 'q', long)]
-        quiet: bool,
     },
     Config {
         subdir: String,
@@ -156,8 +138,7 @@ pub enum Commands {
         value: Option<String>,
     },
     /// Find subrepos sharing the same remote+branch but with diverged commits and sync them
-    Sync {
-        #[arg(short = 'q', long)]
-        quiet: bool,
-    },
+    Sync,
+    /// Scan all subrepos for issues (stale refs, rebase parent drift, missing fields) and offer to fix them
+    Fix,
 }

@@ -6,6 +6,7 @@ use crate::encode::encode_subdir;
 use crate::git_utils::{run_git, run_git_interactive, try_run_git};
 use crate::gitrepo::read_gitrepo;
 use anyhow::Result;
+use colored::Colorize;
 
 /// Data produced by the parallel prepare phase; consumed by the sequential commit phase.
 pub struct PullPrepared {
@@ -87,6 +88,20 @@ pub fn prepare(
     let subdir = normalize_subdir(&subdir);
     let subref = encode_subdir(&subdir);
 
+    // Warn if this is a nested subrepo — its parent= will reference the main
+    // repo's HEAD, not the outer subrepo's commit history.
+    if let Some(outer) = super::find_outer_subrepo(ctx, &subdir) {
+        eprintln!(
+            "{} '{}' is nested inside subrepo '{}'. \
+             The parent= field will reference the main repo's HEAD, not the outer subrepo's history. \
+             Re-running this after a rebase of '{}' may require `git subrepo fix`.",
+            "⚠ Warning:".yellow().bold(),
+            subdir,
+            outer,
+            outer
+        );
+    }
+
     let gitrepo_path = ctx.repo_root.join(&subdir).join(".gitrepo");
     if !gitrepo_path.exists() {
         anyhow::bail!("No '{subdir}/.gitrepo' file.");
@@ -148,17 +163,32 @@ pub fn prepare(
     if cfg.method == "rebase" {
         let (ok, out) = try_run_git(&["rebase", &refs_subrepo_fetch, &branch_name], &worktree);
         if !ok {
+            let worktree_display = ctx.worktree_display(&subdir);
             anyhow::bail!(
-                "The \"git rebase\" command failed:\n\n  {}",
-                out.replace('\n', "\n  ")
+                "The \"git rebase\" command failed:\n\n  {}\n\n\
+                 Resolve conflicts in the worktree, then run:\n\
+                 \x1b[1;36m  cd '{}'\x1b[0m\n\
+                 \x1b[1;36m  # fix conflicts, then: git rebase --continue\x1b[0m\n\
+                 \x1b[1;36m  git subrepo commit {}\x1b[0m",
+                out.replace('\n', "\n  "),
+                worktree_display,
+                subdir,
             );
         }
     } else {
         let (ok, out) = try_run_git(&["merge", &refs_subrepo_fetch], &worktree);
         if !ok {
+            let worktree_display = ctx.worktree_display(&subdir);
             anyhow::bail!(
-                "The \"git merge\" command failed:\n\n  {}",
-                out.replace('\n', "\n  ")
+                "The \"git merge\" command failed:\n\n  {}\n\n\
+                 Resolve conflicts in the worktree, then finalise with:\n\
+                 \x1b[1;36m  cd '{}'\x1b[0m\n\
+                 \x1b[1;36m  # fix conflicts, stage them, then:\x1b[0m\n\
+                 \x1b[1;36m  git merge --continue\x1b[0m\n\
+                 \x1b[1;36m  git subrepo commit {}\x1b[0m",
+                out.replace('\n', "\n  "),
+                worktree_display,
+                subdir,
             );
         }
     }

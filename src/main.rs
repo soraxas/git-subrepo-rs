@@ -67,6 +67,7 @@ fn print_no_command_help() {
         ("clean", "[<subdir>]", "Remove subrepo branches/refs"),
         ("config", "<subdir> <key>", "Get/set subrepo config"),
         ("sync", "", "Sync subrepos sharing the same remote"),
+        ("fix", "", "Scan for issues and offer to fix them"),
     ];
     for (name, args, desc) in &cmds {
         println!("  {:<8} {:<26}  {}", name.green().bold(), args, desc);
@@ -254,7 +255,7 @@ async fn main() {
                         // Find which subcommand was invoked via env args
                         let known_cmds = [
                             "clone", "init", "pull", "push", "fetch", "branch", "commit", "status",
-                            "clean", "config", "sync",
+                            "clean", "config", "sync", "fix",
                         ];
                         let cmd = std::env::args()
                             .find(|a| known_cmds.contains(&a.as_str()))
@@ -308,7 +309,6 @@ async fn main() {
                 subdir,
                 branch,
                 method,
-                quiet: q,
                 message,
                 stage_only,
                 extra,
@@ -323,15 +323,7 @@ async fn main() {
                     );
                 }
                 commands::clone::run(
-                    remote,
-                    subdir,
-                    branch,
-                    force,
-                    method,
-                    quiet || q,
-                    message,
-                    no_edit,
-                    stage_only,
+                    remote, subdir, branch, force, method, quiet, message, no_edit, stage_only,
                     verify,
                 )
             }
@@ -346,7 +338,6 @@ async fn main() {
                 branch,
                 remote,
                 method,
-                quiet: q,
                 update,
                 message,
                 stage_only,
@@ -376,7 +367,7 @@ async fn main() {
                         for s in level {
                             idx += 1;
                             let cur_idx = idx;
-                            if !quiet && !q {
+                            if !quiet {
                                 eprintln!(
                                     "{}",
                                     format!("[{cur_idx}/{total}] Preparing '{s}'...").bright_cyan()
@@ -390,19 +381,8 @@ async fn main() {
                             let h = tokio::task::spawn_blocking(move || {
                                 let ctx = commands::Context::new()?;
                                 commands::pull::prepare(
-                                    &ctx,
-                                    s_clone,
-                                    branch,
-                                    remote,
-                                    force,
-                                    method,
-                                    quiet || q,
-                                    update,
-                                    message,
-                                    no_edit,
-                                    stage_only,
-                                    verify,
-                                    None,
+                                    &ctx, s_clone, branch, remote, force, method, quiet, update,
+                                    message, no_edit, stage_only, verify, None,
                                 )
                             });
                             handles.push((cur_idx, s, h));
@@ -471,7 +451,7 @@ async fn main() {
                                             remote.clone(),
                                             true, // force
                                             method.clone(),
-                                            quiet || q,
+                                            quiet,
                                             update,
                                             message.clone(),
                                             no_edit,
@@ -511,7 +491,7 @@ async fn main() {
                                             remote.clone(),
                                             true, // force
                                             method.clone(),
-                                            quiet || q,
+                                            quiet,
                                             update,
                                             message.clone(),
                                             no_edit,
@@ -547,13 +527,13 @@ async fn main() {
                         // Phase 2: commit sequentially (git commit is not concurrent-safe)
                         let ctx = commands::Context::new()?;
                         for (cur_idx, s, prepared) in prepared_list {
-                            if !quiet && !q {
+                            if !quiet {
                                 eprintln!(
                                     "{}",
                                     format!("[{cur_idx}/{total}] Pulling '{s}'...").bright_cyan()
                                 );
                             }
-                            commands::pull::commit_prepared(&ctx, prepared, quiet || q)?;
+                            commands::pull::commit_prepared(&ctx, prepared, quiet)?;
                         }
                     }
                     Ok(())
@@ -564,17 +544,8 @@ async fn main() {
                         anyhow::bail!("The subdir '{}' should not be absolute path.", subdir);
                     }
                     commands::pull::run(
-                        subdir,
-                        branch,
-                        remote,
-                        force,
-                        method,
-                        quiet || q,
-                        update,
-                        message,
-                        no_edit,
-                        stage_only,
-                        verify,
+                        subdir, branch, remote, force, method, quiet, update, message, no_edit,
+                        stage_only, verify,
                     )
                 }
             }
@@ -584,7 +555,7 @@ async fn main() {
                 remote,
                 method,
                 squash,
-                quiet: q,
+
                 update: _,
                 message,
             }) => {
@@ -597,7 +568,7 @@ async fn main() {
                     for level in levels {
                         for s in level {
                             idx += 1;
-                            if !quiet && !q {
+                            if !quiet {
                                 eprintln!(
                                     "{}",
                                     format!("[{idx}/{total}] Pushing '{s}'...").bright_cyan()
@@ -610,7 +581,7 @@ async fn main() {
                                 force,
                                 method.clone(),
                                 squash,
-                                quiet || q,
+                                quiet,
                                 message.clone(),
                             )?;
                         }
@@ -620,14 +591,7 @@ async fn main() {
                     let subdir = subdir
                         .ok_or_else(|| anyhow::anyhow!("Command 'push' requires arg 'subdir'."))?;
                     commands::push::run(
-                        subdir,
-                        branch,
-                        remote,
-                        force,
-                        method,
-                        squash,
-                        quiet || q,
-                        message,
+                        subdir, branch, remote, force, method, squash, quiet, message,
                     )
                 }
             }
@@ -635,7 +599,6 @@ async fn main() {
                 subdir,
                 branch,
                 remote,
-                quiet: q,
             }) => {
                 if all || all_all {
                     let subrepos = get_all_subrepos(all_all)?;
@@ -648,13 +611,13 @@ async fn main() {
                     let levels = group_by_depth(subrepos);
                     let branch_cap = branch.clone();
                     let remote_cap = remote.clone();
-                    let q_cap = q;
-                    run_all_parallel(levels, total, quiet || q, "Fetching", move |s, pb| {
+
+                    run_all_parallel(levels, total, quiet, "Fetching", move |s, pb| {
                         commands::fetch::run_with_pb(
                             s.clone(),
                             branch_cap.clone(),
                             remote_cap.clone(),
-                            q_cap,
+                            quiet,
                             Some(pb),
                         )
                     })
@@ -663,10 +626,10 @@ async fn main() {
                 } else {
                     let subdir = subdir
                         .ok_or_else(|| anyhow::anyhow!("Command 'fetch' requires arg 'subdir'."))?;
-                    commands::fetch::run(subdir, branch, remote, quiet || q).map(|_| ())
+                    commands::fetch::run(subdir, branch, remote, quiet).map(|_| ())
                 }
             }
-            Some(Commands::Branch { subdir, quiet: q }) => {
+            Some(Commands::Branch { subdir }) => {
                 if all || all_all {
                     let subrepos = get_all_subrepos(all_all)?;
                     let total = subrepos.len();
@@ -676,14 +639,14 @@ async fn main() {
                     for level in levels {
                         for s in level {
                             idx += 1;
-                            if !quiet && !q {
+                            if !quiet {
                                 eprintln!(
                                     "{}",
                                     format!("[{idx}/{total}] Branching '{s}'...").bright_cyan()
                                 );
                             }
                             // branch --all: skip subrepos with no new commits
-                            let _ = commands::branch_cmd::run(s, force, fetch, quiet || q);
+                            let _ = commands::branch_cmd::run(s, force, fetch, quiet);
                         }
                     }
                     Ok(())
@@ -691,47 +654,36 @@ async fn main() {
                     let subdir = subdir.ok_or_else(|| {
                         anyhow::anyhow!("Command 'branch' requires arg 'subdir'.")
                     })?;
-                    commands::branch_cmd::run(subdir, force, fetch, quiet || q)
+                    commands::branch_cmd::run(subdir, force, fetch, quiet)
                 }
             }
             Some(Commands::Commit {
                 subdir,
                 subrepo_commit_ref,
-                quiet: q,
                 message,
             }) => commands::commit_cmd::run(
                 subdir,
                 subrepo_commit_ref,
                 force,
                 fetch,
-                quiet || q,
+                quiet,
                 message,
                 verify,
             ),
             Some(Commands::Status {
                 subdir,
-                quiet: q,
-                verbose: v,
                 no_dirty,
                 no_fetch,
             }) => {
                 // dirty is ON by default; fetch is ON by default (--no-dirty / --no-fetch disable them)
-                commands::status::run(
-                    subdir,
-                    quiet || q,
-                    verbose || v,
-                    !no_fetch,
-                    all,
-                    all_all,
-                    !no_dirty,
-                )
+                commands::status::run(subdir, quiet, verbose, !no_fetch, all, all_all, !no_dirty)
             }
-            Some(Commands::Clean { subdir, quiet: q }) => {
+            Some(Commands::Clean { subdir }) => {
                 if (all || all_all) && subdir.is_none() {
                     let subrepos = get_all_subrepos(all_all)?;
                     let total = subrepos.len();
                     let levels = group_by_depth(subrepos);
-                    run_all_parallel(levels, total, quiet || q, "Cleaning", move |s, _pb| {
+                    run_all_parallel(levels, total, quiet, "Cleaning", move |s, _pb| {
                         let subdir = s.clone();
                         commands::clean::run(Some(s), force, true)?;
                         Ok(format!("{}", format!("Cleaned '{subdir}'").green()))
@@ -739,13 +691,17 @@ async fn main() {
                     .await?;
                     Ok(())
                 } else {
-                    commands::clean::run(subdir, force, quiet || q)
+                    commands::clean::run(subdir, force, quiet)
                 }
             }
             Some(Commands::Config { subdir, key, value }) => {
                 commands::config::run(subdir, key, value, force)
             }
-            Some(Commands::Sync { quiet: q }) => commands::sync::run(no_edit, verify, quiet || q),
+            Some(Commands::Sync) => commands::sync::run(no_edit, verify, quiet),
+            Some(Commands::Fix) => {
+                let ctx = commands::Context::new()?;
+                commands::fix::run(&ctx)
+            }
         }
     }
     .await;

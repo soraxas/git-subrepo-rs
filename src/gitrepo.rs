@@ -73,6 +73,17 @@ pub fn update_gitrepo(
     cmdver: &str,
     repo_root: &Path,
 ) -> Result<()> {
+    // Refresh the header comment (migrate from old git-subrepo to git-subrepo-rs).
+    // Read current file, strip leading `;` comment lines, prepend our canonical header.
+    if let Ok(current) = std::fs::read_to_string(path) {
+        let body: String = current
+            .lines()
+            .skip_while(|l| l.starts_with(';') || l.trim().is_empty())
+            .map(|l| format!("{l}\n"))
+            .collect();
+        std::fs::write(path, format!("{GITREPO_HEADER}{body}"))?;
+    }
+
     let path_str = path.to_string_lossy().into_owned();
 
     if let Some(r) = remote {
