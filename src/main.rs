@@ -59,7 +59,11 @@ fn print_no_command_help() {
             "Create a branch of local subrepo commits",
         ),
         ("commit", "<subdir>", "Commit a merged branch into mainline"),
-        ("status", "[<subdir>]", "Show subrepo status"),
+        (
+            "status",
+            "[<subdir>]",
+            "Show subrepo status (fetches + dirty info by default)",
+        ),
         ("clean", "[<subdir>]", "Remove subrepo branches/refs"),
         ("config", "<subdir> <key>", "Get/set subrepo config"),
         ("sync", "", "Sync subrepos sharing the same remote"),
@@ -708,9 +712,19 @@ async fn main() {
                 subdir,
                 quiet: q,
                 verbose: v,
-                dirty,
+                no_dirty,
+                no_fetch,
             }) => {
-                commands::status::run(subdir, quiet || q, verbose || v, fetch, all, all_all, dirty)
+                // dirty is ON by default; fetch is ON by default (--no-dirty / --no-fetch disable them)
+                commands::status::run(
+                    subdir,
+                    quiet || q,
+                    verbose || v,
+                    !no_fetch,
+                    all,
+                    all_all,
+                    !no_dirty,
+                )
             }
             Some(Commands::Clean { subdir, quiet: q }) => {
                 if (all || all_all) && subdir.is_none() {

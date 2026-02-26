@@ -1,4 +1,4 @@
-use crate::commands::{Context, normalize_subdir};
+use crate::commands::{Context, normalize_subdir, subrepo_fetch};
 use crate::encode::encode_subdir;
 use crate::git_utils::{branch_exists, rev_parse_short, try_run_git};
 use crate::gitrepo::read_gitrepo;
@@ -26,7 +26,7 @@ pub fn run(
     subdir_opt: Option<String>,
     quiet: bool,
     verbose: bool,
-    _fetch: bool,
+    fetch: bool,
     all: bool,
     all_all: bool,
     dirty: bool,
@@ -47,6 +47,21 @@ pub fn run(
     if subdirs.is_empty() && !quiet {
         println!("{}", "No subrepos.".yellow());
         return Ok(());
+    }
+
+    // Fetch upstream refs so the upstream status is fresh.
+    if fetch && !quiet {
+        for subdir in &subdirs {
+            let gitrepo_path = ctx.repo_root.join(subdir).join(".gitrepo");
+            if let Ok(cfg) = read_gitrepo(&gitrepo_path, &ctx.repo_root)
+                && !cfg.remote.is_empty()
+                && cfg.remote != "none"
+            {
+                let subref = encode_subdir(subdir);
+                // Best-effort: ignore fetch errors (remote may be unreachable)
+                let _ = subrepo_fetch(&ctx, &cfg.remote, &cfg.branch, &subref);
+            }
+        }
     }
 
     if !subdirs.is_empty() && !quiet && !has_subdir {
