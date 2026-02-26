@@ -151,22 +151,119 @@ pub fn run(
 
         field!("Remote URL:", cfg.remote.bright_blue());
 
-        let refs_subrepo_fetch = format!("refs/subrepo/{subref}/fetch");
-        if let Some(us) = rev_parse_short(&refs_subrepo_fetch, &ctx.repo_root) {
-            field!("Upstream Ref:", us.yellow());
+        // Tracking Branch: master (eb439faf) [up to date]
+        //               or master (eb439faf) [remote HEAD: 81a64ae7 (2 commits ahead)]
+        {
+            let refs_subrepo_fetch = format!("refs/subrepo/{subref}/fetch");
+            let pulled_short = if cfg.commit.is_empty() {
+                None
+            } else {
+                rev_parse_short(&cfg.commit, &ctx.repo_root)
+            };
+            let upstream_short = rev_parse_short(&refs_subrepo_fetch, &ctx.repo_root);
+
+            let mut tracking = cfg.branch.cyan().to_string();
+            if let Some(ref p) = pulled_short {
+                tracking.push_str(&format!(" ({})", p.yellow()));
+            }
+
+            // Compare upstream SHA to pulled commit SHA
+            let fetch_sha = {
+                let (ok, out) = try_run_git(&["rev-parse", &refs_subrepo_fetch], &ctx.repo_root);
+                if ok {
+                    out.trim().to_string()
+                } else {
+                    String::new()
+                }
+            };
+
+            let up_to_date = !fetch_sha.is_empty()
+                && !cfg.commit.is_empty()
+                && (fetch_sha.starts_with(&cfg.commit)
+                    || cfg.commit.starts_with(fetch_sha.as_str()));
+
+            if up_to_date {
+                tracking.push_str(&format!(" [{}]", "up to date".green()));
+            } else if let Some(ref u) = upstream_short {
+                // Count how many commits ahead the remote is
+                let ahead_str = if !cfg.commit.is_empty() {
+                    let (ok, cnt) = try_run_git(
+                        &[
+                            "rev-list",
+                            "--count",
+                            &format!("{}..{}", cfg.commit, refs_subrepo_fetch),
+                        ],
+                        &ctx.repo_root,
+                    );
+                    if ok {
+                        let n: usize = cnt.trim().parse().unwrap_or(0);
+                        if n > 0 {
+                            format!(" ({} commit{} ahead)", n, if n == 1 { "" } else { "s" })
+                        } else {
+                            String::new()
+                        }
+                    } else {
+                        String::new()
+                    }
+                } else {
+                    String::new()
+                };
+                tracking.push_str(&format!(
+                    " [remote HEAD: {}{}]",
+                    u.bright_magenta(),
+                    ahead_str.bright_magenta()
+                ));
+            }
+            field!("Tracking Branch:", tracking);
         }
 
-        field!("Tracking Branch:", cfg.branch.cyan());
+        // Pull Parent: 8cb9e7ae (N commits ago)  or warning if not in history
+        if !cfg.parent.is_empty() {
+            let parent_short = rev_parse_short(&cfg.parent, &ctx.repo_root)
+                .unwrap_or_else(|| cfg.parent[..cfg.parent.len().min(7)].to_string());
 
-        if !cfg.commit.is_empty()
-            && let Some(short) = rev_parse_short(&cfg.commit, &ctx.repo_root)
-        {
-            field!("Pulled Commit:", short.yellow());
-        }
-        if !cfg.parent.is_empty()
-            && let Some(short) = rev_parse_short(&cfg.parent, &ctx.repo_root)
-        {
-            field!("Pull Parent:", short.dimmed());
+            // How many commits ago is the parent?
+            let check_ref = crate::commands::parent_check_ref(&ctx, subdir);
+            let (ok, count_out) = try_run_git(
+                &[
+                    "rev-list",
+                    "--count",
+                    &format!("{}..{}", cfg.parent, check_ref),
+                ],
+                &ctx.repo_root,
+            );
+            let ancestor_count: Option<usize> = if ok {
+                count_out.trim().parse().ok()
+            } else {
+                None
+            };
+
+            let (is_ancestor, _) = try_run_git(
+                &["merge-base", "--is-ancestor", &cfg.parent, &check_ref],
+                &ctx.repo_root,
+            );
+
+            let parent_display = if is_ancestor {
+                let ago = match ancestor_count {
+                    Some(0) => "at HEAD".dimmed().to_string(),
+                    Some(n) => format!("{} commit{} ago", n, if n == 1 { "" } else { "s" })
+                        .dimmed()
+                        .to_string(),
+                    None => String::new(),
+                };
+                format!("{} ({})", parent_short.dimmed(), ago)
+            } else {
+                format!(
+                    "{} ({}) {}",
+                    parent_short.yellow(),
+                    ancestor_count
+                        .map(|n| format!("{n} commits ago"))
+                        .unwrap_or_else(|| "?".to_string())
+                        .yellow(),
+                    "⚠  not in history — run `git subrepo fix`".yellow().bold()
+                )
+            };
+            field!("Pull Parent:", parent_display);
         }
 
         if dirty || verbose {
