@@ -622,7 +622,7 @@ pub(super) fn find_new_parent_after_rebase(
             check_ref,
             "-1",
             "-G",
-            "commit =",
+            "parent =",
             "--format=%H",
             "--",
             &gitrepo_rel,
