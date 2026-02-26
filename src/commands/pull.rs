@@ -19,6 +19,7 @@ pub struct PullPrepared {
     pub commit_msg: String,
     pub no_edit: bool,
     pub stage_only: bool,
+    pub verify: bool,
     pub update_remote: Option<String>,
     pub update_branch: Option<String>,
     /// Number of upstream commits being pulled in (0 = update-only / force re-pull).
@@ -38,6 +39,7 @@ pub fn run(
     message: Option<String>,
     no_edit: bool,
     stage_only: bool,
+    verify: bool,
 ) -> Result<()> {
     let mut ctx = Context::new()?;
     ctx.quiet = quiet;
@@ -55,6 +57,7 @@ pub fn run(
         message,
         no_edit,
         stage_only,
+        verify,
         None,
     )? {
         commit_prepared(&ctx, prepared, quiet)?;
@@ -78,6 +81,7 @@ pub fn prepare(
     message: Option<String>,
     no_edit: bool,
     stage_only: bool,
+    verify: bool,
     pb: Option<indicatif::ProgressBar>,
 ) -> Result<Option<PullPrepared>> {
     let subdir = normalize_subdir(&subdir);
@@ -193,6 +197,7 @@ pub fn prepare(
         commit_msg,
         no_edit: no_edit || has_explicit_message,
         stage_only,
+        verify: verify || cfg.verify,
         update_remote: if update { override_remote } else { None },
         update_branch: if update { override_branch } else { None },
         upstream_commit_count,
@@ -220,6 +225,7 @@ pub fn commit_prepared(ctx: &Context, prepared: PullPrepared, quiet: bool) -> Re
         commit_msg,
         no_edit,
         stage_only,
+        verify,
         ref update_remote,
         ref update_branch,
         upstream_commit_count,
@@ -263,7 +269,12 @@ pub fn commit_prepared(ctx: &Context, prepared: PullPrepared, quiet: bool) -> Re
 
     match action {
         CommitAction::Commit(msg) => {
-            run_git_interactive(&["commit", "-m", &msg], &ctx.repo_root)?;
+            let mut args = vec!["commit"];
+            if !verify {
+                args.push("--no-verify");
+            }
+            args.extend(["-m", &msg]);
+            run_git_interactive(&args, &ctx.repo_root)?;
             // update commit ref
             run_git(
                 &[

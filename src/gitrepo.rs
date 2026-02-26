@@ -2,7 +2,7 @@ use crate::git_utils::run_git;
 use anyhow::Result;
 use std::path::Path;
 
-const GITREPO_HEADER: &str = "; DO NOT EDIT (unless you know what you are doing)\n;\n; This subdirectory is a git \"subrepo\", and this file is maintained by the\n; git-subrepo command. See https://github.com/ingydotnet/git-subrepo#readme\n;\n";
+const GITREPO_HEADER: &str = "; DO NOT EDIT (unless you know what you are doing)\n;\n; This subdirectory is a git \"subrepo\", and this file is maintained by the\n; git-subrepo command. See https://github.com/soraxas/git-subrepo-rs\n;\n";
 
 #[derive(Debug, Default, Clone)]
 pub struct GitrepoConfig {
@@ -13,6 +13,8 @@ pub struct GitrepoConfig {
     pub method: String,
     #[allow(dead_code)]
     pub cmdver: String,
+    /// If true, run git hooks on commit (default: false = --no-verify)
+    pub verify: bool,
 }
 
 /// Read a .gitrepo file using git config.
@@ -37,6 +39,7 @@ pub fn read_gitrepo(path: &Path, repo_root: &Path) -> Result<GitrepoConfig> {
             if m.is_empty() { "merge".to_string() } else { m }
         },
         cmdver: get("cmdver"),
+        verify: get("verify") == "true",
     })
 }
 

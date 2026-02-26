@@ -16,6 +16,7 @@ pub fn run(
     message: Option<String>,
     no_edit: bool,
     stage_only: bool,
+    verify: bool,
 ) -> Result<()> {
     let mut ctx = Context::new()?;
     ctx.quiet = quiet;
@@ -149,6 +150,7 @@ pub fn run(
             commit_msg,
             no_edit,
             stage_only,
+            verify,
             quiet,
         )?;
 
@@ -206,6 +208,7 @@ pub fn run(
         commit_msg,
         no_edit,
         stage_only,
+        verify,
         quiet,
     )?;
 
@@ -245,6 +248,7 @@ fn do_clone_commit(
     commit_msg: String,
     no_edit: bool,
     stage_only: bool,
+    verify: bool,
     quiet: bool,
 ) -> Result<()> {
     use colored::Colorize;
@@ -278,7 +282,12 @@ fn do_clone_commit(
             }
         }
         CloneAction::Commit(msg) => {
-            run_git_interactive(&["commit", "-m", &msg], &ctx.repo_root)?;
+            let mut args = vec!["commit"];
+            if !verify {
+                args.push("--no-verify");
+            }
+            args.extend(["-m", &msg]);
+            run_git_interactive(&args, &ctx.repo_root)?;
             run_git(
                 &[
                     "update-ref",

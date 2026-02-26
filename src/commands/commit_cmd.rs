@@ -11,6 +11,7 @@ pub fn run(
     fetch: bool,
     quiet: bool,
     message: Option<String>,
+    verify: bool,
 ) -> Result<()> {
     let ctx = Context::new()?;
     assert_clean_for("commit", &ctx)?;
@@ -56,6 +57,7 @@ pub fn run(
         &cfg.method,
         force,
         Some(&commit_msg),
+        verify || cfg.verify,
     )?;
 
     if !quiet {

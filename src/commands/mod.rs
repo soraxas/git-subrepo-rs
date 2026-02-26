@@ -775,6 +775,7 @@ pub fn subrepo_commit(
     join_method: &str,
     force: bool,
     message: Option<&str>,
+    verify: bool,
 ) -> Result<()> {
     // Check that subrepo_commit_ref exists
     if !rev_exists(subrepo_commit_ref, &ctx.repo_root) {
@@ -887,7 +888,12 @@ pub fn subrepo_commit(
         ),
     };
 
-    run_git_interactive(&["commit", "-m", &commit_msg], &ctx.repo_root)?;
+    let mut commit_args = vec!["commit"];
+    if !verify {
+        commit_args.push("--no-verify");
+    }
+    commit_args.extend(["-m", &commit_msg]);
+    run_git_interactive(&commit_args, &ctx.repo_root)?;
     run_git(
         &[
             "update-ref",

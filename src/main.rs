@@ -288,6 +288,7 @@ async fn main() {
     let force = cli.force;
     let fetch = cli.fetch;
     let no_edit = cli.no_edit;
+    let verify = cli.verify;
 
     let result: anyhow::Result<()> = async {
         match cli.command {
@@ -324,6 +325,7 @@ async fn main() {
                     message,
                     no_edit,
                     stage_only,
+                    verify,
                 )
             }
             Some(Commands::Init {
@@ -392,6 +394,7 @@ async fn main() {
                                     message,
                                     no_edit,
                                     stage_only,
+                                    verify,
                                     None,
                                 )
                             });
@@ -466,6 +469,7 @@ async fn main() {
                                             message.clone(),
                                             no_edit,
                                             stage_only,
+                                            verify,
                                             None,
                                         ) {
                                             Ok(Some(p)) => {
@@ -505,6 +509,7 @@ async fn main() {
                                             message.clone(),
                                             no_edit,
                                             stage_only,
+                                            verify,
                                             None,
                                         ) {
                                             Ok(Some(p)) => {
@@ -562,6 +567,7 @@ async fn main() {
                         message,
                         no_edit,
                         stage_only,
+                        verify,
                     )
                 }
             }
@@ -688,6 +694,7 @@ async fn main() {
                 fetch,
                 quiet || q,
                 message,
+                verify,
             ),
             Some(Commands::Status {
                 subdir,

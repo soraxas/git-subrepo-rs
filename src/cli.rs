@@ -38,6 +38,10 @@ pub struct Cli {
     #[arg(short = 'n', long = "no-edit", global = true)]
     pub no_edit: bool,
 
+    /// Run git hooks during commit (default: hooks are bypassed with --no-verify)
+    #[arg(short = 'V', long = "verify", global = true)]
+    pub verify: bool,
+
     /// Print this help message
     #[arg(short = 'h', long, global = true, action = clap::ArgAction::Help)]
     pub help: Option<bool>,

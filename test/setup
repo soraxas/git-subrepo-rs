@@ -67,6 +67,7 @@ export GIT_EDITOR=true
 
 # Get the location of this script
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+export SCRIPT_DIR="${SCRIPT_DIR}"
 
 BASHLIB=$(
   find "$PWD"/ -type d -name bin -o -type d -name lib | tr '\n' ':'
@@ -228,7 +229,7 @@ test-gitrepo-comment-block() {
 ; DO NOT EDIT (unless you know what you are doing)
 ;
 ; This subdirectory is a git \"subrepo\", and this file is maintained by the
-; git-subrepo command. See https://github.com/ingydotnet/git-subrepo#readme
+; git-subrepo command. See https://github.com/soraxas/git-subrepo-rs
 ;" \
     'Comment header block is correct'
 }
