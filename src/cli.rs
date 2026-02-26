@@ -152,4 +152,9 @@ pub enum Commands {
         key: String,
         value: Option<String>,
     },
+    /// Find subrepos sharing the same remote+branch but with diverged commits and sync them
+    Sync {
+        #[arg(short = 'q', long)]
+        quiet: bool,
+    },
 }

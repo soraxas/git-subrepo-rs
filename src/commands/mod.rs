@@ -8,6 +8,7 @@ pub mod init;
 pub mod pull;
 pub mod push;
 pub mod status;
+pub mod sync;
 
 use crate::git_utils::{
     branch_exists, commit_in_rev_list, rev_exists, run_git, run_git_interactive, try_run_git,

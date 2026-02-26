@@ -62,6 +62,7 @@ fn print_no_command_help() {
         ("status", "[<subdir>]", "Show subrepo status"),
         ("clean", "[<subdir>]", "Remove subrepo branches/refs"),
         ("config", "<subdir> <key>", "Get/set subrepo config"),
+        ("sync", "", "Sync subrepos sharing the same remote"),
     ];
     for (name, args, desc) in &cmds {
         println!("  {:<8} {:<26}  {}", name.green().bold(), args, desc);
@@ -151,7 +152,9 @@ async fn run_all_parallel(
 
                 match result {
                     Ok(msg) => {
-                        if let Some(ref m) = mp_clone {
+                        if !msg.is_empty()
+                            && let Some(ref m) = mp_clone
+                        {
                             let _ = m.println(&msg);
                         }
                         Ok(())
@@ -247,7 +250,7 @@ async fn main() {
                         // Find which subcommand was invoked via env args
                         let known_cmds = [
                             "clone", "init", "pull", "push", "fetch", "branch", "commit", "status",
-                            "clean", "config",
+                            "clean", "config", "sync",
                         ];
                         let cmd = std::env::args()
                             .find(|a| known_cmds.contains(&a.as_str()))
@@ -632,6 +635,11 @@ async fn main() {
             }) => {
                 if all || all_all {
                     let subrepos = get_all_subrepos(all_all)?;
+                    // Single clean check before spawning parallel tasks.
+                    {
+                        let ctx = commands::Context::new()?;
+                        commands::assert_clean_for("fetch", &ctx)?;
+                    }
                     let total = subrepos.len();
                     let levels = group_by_depth(subrepos);
                     let branch_cap = branch.clone();
@@ -723,6 +731,7 @@ async fn main() {
             Some(Commands::Config { subdir, key, value }) => {
                 commands::config::run(subdir, key, value, force)
             }
+            Some(Commands::Sync { quiet: q }) => commands::sync::run(no_edit, verify, quiet || q),
         }
     }
     .await;
