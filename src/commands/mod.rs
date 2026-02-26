@@ -14,6 +14,7 @@ use crate::git_utils::{
     branch_exists, commit_in_rev_list, rev_exists, run_git, run_git_interactive, try_run_git,
 };
 use anyhow::Result;
+use colored::Colorize;
 use std::path::PathBuf;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -448,6 +449,72 @@ fn subrepo_branch_no_parent(
     Ok(())
 }
 
+/// Walk up to `limit` commits in HEAD's history that touch `subdir/`, comparing
+/// each commit's subdir tree SHA against the stored parent's subdir tree SHA.
+/// Returns the first (most recent) commit whose tree matches, or None.
+fn find_new_parent_after_rebase(
+    ctx: &Context,
+    subdir: &str,
+    stored_parent: &str,
+) -> Option<String> {
+    // Get the subdir tree SHA at the stored parent commit
+    let (ok, expected_tree) = try_run_git(
+        &["rev-parse", &format!("{stored_parent}:{subdir}")],
+        &ctx.repo_root,
+    );
+    if !ok || expected_tree.trim().is_empty() {
+        return None;
+    }
+    let expected_tree = expected_tree.trim();
+
+    // Get up to 500 commits in HEAD history that touched subdir/ (most recent first)
+    let subdir_path = format!("{subdir}/");
+    let (ok, log) = try_run_git(
+        &["log", "--format=%H", "-500", "--", &subdir_path],
+        &ctx.repo_root,
+    );
+    if !ok || log.trim().is_empty() {
+        return None;
+    }
+
+    // Check each candidate's subdir tree in one cat-file batch call for efficiency.
+    // Build the list of <commit>:<subdir> queries.
+    let queries: Vec<String> = log.lines().map(|sha| format!("{sha}:{subdir}")).collect();
+
+    // Use git cat-file --batch to resolve all tree SHAs at once
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let mut child = Command::new("git")
+        .args(["cat-file", "--batch-check=%(objectname) %(objecttype)"])
+        .current_dir(&ctx.repo_root)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+
+    let stdin = child.stdin.take()?;
+    let input = queries.join("\n") + "\n";
+    let mut stdin = stdin;
+    stdin.write_all(input.as_bytes()).ok()?;
+    drop(stdin);
+
+    let output = child.wait_with_output().ok()?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Match lines: "<tree-sha> tree" or "missing"
+    let commits: Vec<&str> = log.lines().collect();
+    for (commit, line) in commits.iter().zip(stdout.lines()) {
+        let parts: Vec<&str> = line.splitn(2, ' ').collect();
+        if parts.len() == 2 && parts[1].trim() == "tree" && parts[0] == expected_tree {
+            return Some(commit.to_string());
+        }
+    }
+
+    None
+}
+
 fn subrepo_branch_with_parent(
     ctx: &Context,
     subdir: &str,
@@ -464,34 +531,102 @@ fn subrepo_branch_with_parent(
     );
 
     if !is_ancestor {
-        // Parent is not an ancestor - likely caused by rebase
-        // Find the previous merge point from the .gitrepo file in history
-        let gitrepo_rel = format!("{subdir}/.gitrepo");
-        let (_, merge_log) = try_run_git(
-            &[
-                "log",
-                "-1",
-                "-G",
-                "commit =",
-                "--format=%H",
-                "--",
-                &gitrepo_rel,
-            ],
-            &ctx.repo_root,
+        // Parent is not an ancestor — likely caused by a rebase.
+        // Try to find the new parent: walk recent history for a commit whose
+        // subdir tree matches what the stored parent had.
+        let new_parent = find_new_parent_after_rebase(ctx, subdir, subrepo_parent);
+
+        let stored_short = &subrepo_parent[..subrepo_parent.len().min(7)];
+
+        // Always print the diagnosis.
+        eprintln!(
+            "{}: '{}' parent {} is not in HEAD history (caused by a rebase).",
+            "git-subrepo".yellow().bold(),
+            subdir,
+            stored_short
         );
-        let merge_point = if !merge_log.trim().is_empty() {
-            let (_, parent_of_merge) = try_run_git(
-                &["rev-parse", &format!("{}^", merge_log.trim())],
-                &ctx.repo_root,
-            );
-            parent_of_merge
-        } else {
-            String::new()
-        };
-        anyhow::bail!(
-            "The last sync point (where upstream and the subrepo were equal) is not an ancestor of the current HEAD.\nThis was probably caused by a rebase. Previous merge point was: {}",
-            merge_point.trim()
-        );
+
+        match new_parent {
+            Some(ref candidate) => {
+                let candidate_short = &candidate[..candidate.len().min(7)];
+                eprintln!(
+                    "  Found likely new parent: {} (subdir tree matches stored parent's tree)",
+                    candidate_short.green().bold()
+                );
+                eprintln!(
+                    "  Run: git subrepo config {} parent {}  to repair, then retry.",
+                    subdir, candidate_short
+                );
+                eprintln!();
+
+                // Try interactive prompt — gracefully skip if no TTY.
+                use dialoguer::Select;
+                let choices = &[
+                    format!("Auto-repair: use {} as new parent", candidate_short),
+                    "Force: reset parent to HEAD (discards local divergence)".to_string(),
+                    "Abort".to_string(),
+                ];
+                let selection = Select::with_theme(&dialoguer::theme::ColorfulTheme::default())
+                    .with_prompt("How to proceed?")
+                    .items(choices)
+                    .default(0)
+                    .interact_opt();
+
+                match selection {
+                    Ok(Some(0)) => {
+                        // Repair: update .gitrepo with the discovered parent and continue
+                        let gitrepo_path = ctx.repo_root.join(subdir).join(".gitrepo");
+                        crate::git_utils::run_git(
+                            &[
+                                "config",
+                                "--file",
+                                &gitrepo_path.to_string_lossy(),
+                                "subrepo.parent",
+                                candidate,
+                            ],
+                            &ctx.repo_root,
+                        )?;
+                        return subrepo_branch_with_parent(
+                            ctx,
+                            subdir,
+                            subref,
+                            candidate,
+                            join_method,
+                            branch_name,
+                            force,
+                        );
+                    }
+                    Ok(Some(1)) => {
+                        // Force: treat HEAD as the parent
+                        let (_, head) = try_run_git(&["rev-parse", "HEAD"], &ctx.repo_root);
+                        let head = head.trim().to_string();
+                        return subrepo_branch_with_parent(
+                            ctx,
+                            subdir,
+                            subref,
+                            &head,
+                            join_method,
+                            branch_name,
+                            force,
+                        );
+                    }
+                    _ => {
+                        // Abort or no TTY — bail with repair hint
+                        anyhow::bail!(
+                            "Aborted. To repair: git subrepo config {} parent {}",
+                            subdir,
+                            candidate_short
+                        );
+                    }
+                }
+            }
+            None => {
+                anyhow::bail!(
+                    "No matching commit found in the last 500 commits. \
+                     Use `--force` to treat HEAD as the new parent.",
+                );
+            }
+        }
     }
 
     // Get rev-list from subrepo_parent..HEAD
