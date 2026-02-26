@@ -4,6 +4,8 @@ use crate::git_utils::{branch_exists, rev_parse_short, try_run_git};
 use crate::gitrepo::read_gitrepo;
 use anyhow::Result;
 use colored::Colorize;
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use std::time::Duration;
 
 /// Label column width (chars). Value starts at col 2 + LABEL_W + 2 = 22.
 const LABEL_W: usize = 18;
@@ -49,18 +51,60 @@ pub fn run(
         return Ok(());
     }
 
-    // Fetch upstream refs so the upstream status is fresh.
+    // Fetch upstream refs in parallel so status is always fresh.
     if fetch && !quiet {
-        for subdir in &subdirs {
-            let gitrepo_path = ctx.repo_root.join(subdir).join(".gitrepo");
-            if let Ok(cfg) = read_gitrepo(&gitrepo_path, &ctx.repo_root)
-                && !cfg.remote.is_empty()
-                && cfg.remote != "none"
-            {
-                let subref = encode_subdir(subdir);
-                // Best-effort: ignore fetch errors (remote may be unreachable)
-                let _ = subrepo_fetch(&ctx, &cfg.remote, &cfg.branch, &subref);
-            }
+        // Collect (subdir, remote, branch, subref) for all fetchable subrepos.
+        let tasks: Vec<(String, String, String, String)> = subdirs
+            .iter()
+            .filter_map(|subdir| {
+                let gitrepo_path = ctx.repo_root.join(subdir).join(".gitrepo");
+                if let Ok(cfg) = read_gitrepo(&gitrepo_path, &ctx.repo_root)
+                    && !cfg.remote.is_empty()
+                    && cfg.remote != "none"
+                {
+                    let subref = encode_subdir(subdir);
+                    Some((
+                        subdir.clone(),
+                        cfg.remote.clone(),
+                        cfg.branch.clone(),
+                        subref,
+                    ))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        if !tasks.is_empty() {
+            let mp = MultiProgress::new();
+            let spinner_style = ProgressStyle::default_spinner()
+                .template("{spinner:.cyan} {msg}")
+                .unwrap();
+
+            // Create one spinner per task up front so they all appear at once.
+            let bars: Vec<ProgressBar> = tasks
+                .iter()
+                .map(|(subdir, _, _, _)| {
+                    let pb = mp.add(ProgressBar::new_spinner());
+                    pb.set_style(spinner_style.clone());
+                    pb.set_message(format!("Fetching '{subdir}'...").bright_cyan().to_string());
+                    pb.enable_steady_tick(Duration::from_millis(80));
+                    pb
+                })
+                .collect();
+
+            // Fetch all subrepos in parallel using scoped threads.
+            std::thread::scope(|s| {
+                for ((_, remote, branch, subref), pb) in tasks.iter().zip(bars.iter()) {
+                    s.spawn(|| {
+                        // Best-effort — ignore errors (remote may be unreachable)
+                        let _ = subrepo_fetch(&ctx, remote, branch, subref);
+                        pb.finish_and_clear();
+                    });
+                }
+            });
+
+            let _ = mp.clear();
         }
     }
 
