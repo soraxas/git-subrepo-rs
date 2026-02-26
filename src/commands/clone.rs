@@ -5,6 +5,7 @@ use crate::encode::encode_subdir;
 use crate::git_utils::{run_git, run_git_interactive, try_run_git};
 use anyhow::Result;
 
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     remote: String,
     subdir_opt: Option<String>,

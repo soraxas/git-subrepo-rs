@@ -325,10 +325,9 @@ pub(crate) fn parse_other_staged_roots(output: &str, current_subdir: &str) -> Ve
             .components()
             .next()
             .map(|c| c.as_os_str().to_string_lossy().into_owned())
+            && root != current_subdir
         {
-            if root != current_subdir {
-                roots.insert(root);
-            }
+            roots.insert(root);
         }
     }
     roots.into_iter().collect()

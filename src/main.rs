@@ -355,6 +355,7 @@ async fn main() {
                         // Phase 1: prepare all subrepos at this depth in parallel
                         // (fetch + branch creation + rebase – independent per subrepo)
                         let level_len = level.len();
+                        #[allow(clippy::type_complexity)]
                         let mut handles: Vec<(
                             usize,
                             String,
