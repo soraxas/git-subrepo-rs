@@ -449,15 +449,44 @@ fn subrepo_branch_no_parent(
     Ok(())
 }
 
-/// Walk up to `limit` commits in HEAD's history that touch `subdir/`, comparing
-/// each commit's subdir tree SHA against the stored parent's subdir tree SHA.
-/// Returns the first (most recent) commit whose tree matches, or None.
+/// Find the effective new parent after a rebase.
+///
+/// Primary: look for the most recent commit in HEAD history that changed the
+/// `commit =` line in `<subdir>/.gitrepo`.  That commit is the rebased subrepo
+/// pull commit; its parent is the rebased equivalent of the stored parent and
+/// is guaranteed to be reachable from HEAD.
+///
+/// Fallback: walk the last 500 commits and compare each commit's `<subdir>`
+/// tree SHA against the tree SHA stored parent had, using a single
+/// `git cat-file --batch-check` call.
 fn find_new_parent_after_rebase(
     ctx: &Context,
     subdir: &str,
     stored_parent: &str,
 ) -> Option<String> {
-    // Get the subdir tree SHA at the stored parent commit
+    // --- Primary: find the rebased pull commit via .gitrepo log ---
+    let gitrepo_rel = format!("{subdir}/.gitrepo");
+    let (ok, pull_commit) = try_run_git(
+        &[
+            "log",
+            "-1",
+            "-G",
+            "commit =",
+            "--format=%H",
+            "--",
+            &gitrepo_rel,
+        ],
+        &ctx.repo_root,
+    );
+    if ok && !pull_commit.trim().is_empty() {
+        let pull_commit = pull_commit.trim();
+        let (ok2, parent) = try_run_git(&["rev-parse", &format!("{pull_commit}^")], &ctx.repo_root);
+        if ok2 && !parent.trim().is_empty() {
+            return Some(parent.trim().to_string());
+        }
+    }
+
+    // --- Fallback: compare subdir tree SHAs ---
     let (ok, expected_tree) = try_run_git(
         &["rev-parse", &format!("{stored_parent}:{subdir}")],
         &ctx.repo_root,
@@ -467,24 +496,16 @@ fn find_new_parent_after_rebase(
     }
     let expected_tree = expected_tree.trim();
 
-    // Get up to 500 commits in HEAD history that touched subdir/ (most recent first)
-    let subdir_path = format!("{subdir}/");
-    let (ok, log) = try_run_git(
-        &["log", "--format=%H", "-500", "--", &subdir_path],
-        &ctx.repo_root,
-    );
+    let (ok, log) = try_run_git(&["log", "--format=%H", "-500"], &ctx.repo_root);
     if !ok || log.trim().is_empty() {
         return None;
     }
 
-    // Check each candidate's subdir tree in one cat-file batch call for efficiency.
-    // Build the list of <commit>:<subdir> queries.
-    let queries: Vec<String> = log.lines().map(|sha| format!("{sha}:{subdir}")).collect();
-
-    // Use git cat-file --batch to resolve all tree SHAs at once
+    // Batch-check all <commit>:<subdir> tree SHAs in one git cat-file call.
     use std::io::Write;
     use std::process::{Command, Stdio};
 
+    let queries: Vec<String> = log.lines().map(|sha| format!("{sha}:{subdir}")).collect();
     let mut child = Command::new("git")
         .args(["cat-file", "--batch-check=%(objectname) %(objecttype)"])
         .current_dir(&ctx.repo_root)
@@ -494,16 +515,12 @@ fn find_new_parent_after_rebase(
         .spawn()
         .ok()?;
 
-    let stdin = child.stdin.take()?;
     let input = queries.join("\n") + "\n";
-    let mut stdin = stdin;
-    stdin.write_all(input.as_bytes()).ok()?;
-    drop(stdin);
+    child.stdin.take()?.write_all(input.as_bytes()).ok()?;
 
     let output = child.wait_with_output().ok()?;
     let stdout = String::from_utf8_lossy(&output.stdout);
 
-    // Match lines: "<tree-sha> tree" or "missing"
     let commits: Vec<&str> = log.lines().collect();
     for (commit, line) in commits.iter().zip(stdout.lines()) {
         let parts: Vec<&str> = line.splitn(2, ' ').collect();
