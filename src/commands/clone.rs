@@ -423,7 +423,7 @@ fn build_clone_commit_message(
     let short = crate::git_utils::rev_parse_short(upstream_head, &ctx.repo_root)
         .unwrap_or_else(|| "none".to_string());
     format!(
-        "git subrepo clone {subdir}\n\nsubrepo:\n  subdir:   \"{subdir}\"\n  merged:   \"{short}\"\nupstream:\n  origin:   \"{remote}\"\n  branch:   \"{branch}\"\n  commit:   \"{short}\"\ngit-subrepo:\n  version:  \"{}\"\n  origin:   \"???\"\n  commit:   \"???\"\n",
+        "git subrepo clone {subdir}\n\nsubrepo:\n  subdir:   \"{subdir}\"\n  merged:   \"{short}\"\nupstream:\n  origin:   \"{remote}\"\n  branch:   \"{branch}\"\n  commit:   \"{short}\"\ngit-subrepo:\n  version:  \"{}\"\n",
         env!("CARGO_PKG_VERSION")
     )
 }

@@ -508,7 +508,7 @@ fn build_pull_commit_message(
         .unwrap_or_else(|| "none".to_string());
     let ver = env!("CARGO_PKG_VERSION");
     format!(
-        "git subrepo pull {subdir}\n\nsubrepo:\n  subdir:   \"{subdir}\"\n  merged:   \"{merged}\"\nupstream:\n  origin:   \"{remote}\"\n  branch:   \"{branch}\"\n  commit:   \"{commit}\"\ngit-subrepo:\n  version:  \"{ver}\"\n  origin:   \"???\"\n  commit:   \"???\"\n"
+        "git subrepo pull {subdir}\n\nsubrepo:\n  subdir:   \"{subdir}\"\n  merged:   \"{merged}\"\nupstream:\n  origin:   \"{remote}\"\n  branch:   \"{branch}\"\n  commit:   \"{commit}\"\ngit-subrepo:\n  version:  \"{ver}\"\n"
     )
 }
 

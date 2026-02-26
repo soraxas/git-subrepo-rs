@@ -288,7 +288,7 @@ pub fn build_commit_message(
     let merge_suffix = if is_merge { " (merge)" } else { "" };
 
     format!(
-        "git subrepo {command}{merge_suffix} {subdir}\n\nsubrepo:\n  subdir:   \"{subdir}\"\n  merged:   \"{merged}\"\nupstream:\n  origin:   \"{remote}\"\n  branch:   \"{branch}\"\n  commit:   \"{commit}\"\ngit-subrepo:\n  version:  \"{VERSION}\"\n  origin:   \"???\"\n  commit:   \"???\"\n"
+        "git subrepo {command}{merge_suffix} {subdir}\n\nsubrepo:\n  subdir:   \"{subdir}\"\n  merged:   \"{merged}\"\nupstream:\n  origin:   \"{remote}\"\n  branch:   \"{branch}\"\n  commit:   \"{commit}\"\ngit-subrepo:\n  version:  \"{VERSION}\"\n"
     )
 }
 
