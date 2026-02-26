@@ -44,6 +44,7 @@ tap_test!(branch_rev_list, "branch-rev-list.t");
 tap_test!(branch, "branch.t");
 tap_test!(clean, "clean.t");
 tap_test!(clone_annotated_tag, "clone-annotated-tag.t");
+tap_test!(clone_message, "clone-message.t");
 tap_test!(clone, "clone.t");
 tap_test!(compile, "compile.t");
 tap_test!(config, "config.t");

@@ -17,22 +17,21 @@ subrepo-clone-bar-into-foo
 ) &> /dev/null || die
 
 
-# Do the pull and check output, use -m (explicit message skips editor):
+# -m flag: explicit message used directly, no editor opened.
 {
   is "$(
     cd "$OWNER/foo"
     git subrepo pull -m 'Hello World' bar
   )" \
     "Subrepo 'bar' pulled from '$UPSTREAM/bar' (master)." \
-    'subrepo pull command output is correct'
+    'subrepo pull -m output is correct'
 }
 
-# Check -m commit messages
 {
   foo_new_commit_message=$(cd "$OWNER/foo"; git log --format=%B -n 1)
   like "$foo_new_commit_message" \
       "Hello World" \
-      "subrepo pull commit message"
+      "subrepo pull -m commit message"
 }
 
 (
@@ -41,22 +40,21 @@ subrepo-clone-bar-into-foo
   git push
 ) &> /dev/null || die
 
-# Do the pull with editor open (default behaviour — GIT_EDITOR writes the message):
+# Default (non-TTY falls back to editor): GIT_EDITOR writes the message.
 {
   is "$(
     cd "$OWNER/foo"
     GIT_EDITOR='echo cowabunga >' git subrepo pull bar
   )" \
     "Subrepo 'bar' pulled from '$UPSTREAM/bar' (master)." \
-    'subrepo pull command output is correct'
+    'subrepo pull default (editor) output is correct'
 }
 
-# Check editor-written commit messages
 {
   foo_new_commit_message="$(cd "$OWNER/foo"; git log --format=%B -n 1)"
   like "$foo_new_commit_message" \
       "cowabunga" \
-      "subrepo pull edit commit message"
+      "subrepo pull default (editor) commit message"
 }
 
 (
@@ -65,22 +63,69 @@ subrepo-clone-bar-into-foo
   git push
 ) &> /dev/null || die
 
-# Do the pull with -n (no-edit) and -m (explicit message wins, editor not opened):
+# -n -m: explicit message wins, editor not opened.
 {
   is "$(
     cd "$OWNER/foo"
     git subrepo pull -n -m original bar
   )" \
     "Subrepo 'bar' pulled from '$UPSTREAM/bar' (master)." \
-    'subrepo pull command output is correct'
+    'subrepo pull -n -m output is correct'
 }
 
-# Check -n -m commit messages (message should be kept as-is)
 {
   foo_new_commit_message="$(cd "$OWNER/foo"; git log --format=%B -n 1)"
   like "$foo_new_commit_message" \
       "original" \
-      "subrepo pull no-edit with message"
+      "subrepo pull -n -m commit message"
+}
+
+(
+  cd "$OWNER/bar"
+  add-new-files Bar5
+  git push
+) &> /dev/null || die
+
+# -n without -m: uses auto-generated default message, no editor.
+{
+  is "$(
+    cd "$OWNER/foo"
+    git subrepo pull -n bar
+  )" \
+    "Subrepo 'bar' pulled from '$UPSTREAM/bar' (master)." \
+    'subrepo pull -n output is correct'
+}
+
+{
+  foo_new_commit_message="$(cd "$OWNER/foo"; git log --format=%B -n 1)"
+  like "$foo_new_commit_message" \
+      "git subrepo pull bar" \
+      "subrepo pull -n default commit message"
+}
+
+(
+  cd "$OWNER/bar"
+  add-new-files Bar6
+  git push
+) &> /dev/null || die
+
+# Stage-only: --stage-only flag stages changes without committing.
+{
+  cd "$OWNER/foo"
+  git subrepo pull --stage-only bar &> /dev/null
+
+  # Index should be dirty (staged changes present):
+  is "$(git diff --cached --name-only | grep -c 'bar/')" \
+    "$(git diff --cached --name-only | grep -c 'bar/')" \
+    'stage-only leaves changes staged'
+
+  staged=$(git diff --cached --name-only | grep 'bar/' | wc -l | tr -d ' ')
+  isnt "$staged" "0" \
+    'subrepo pull --stage-only stages changes but does not commit'
+
+  # Reset staged changes so subsequent tests start clean.
+  git reset HEAD -- bar/ &> /dev/null
+  git checkout -- bar/ &> /dev/null
 }
 
 done_testing

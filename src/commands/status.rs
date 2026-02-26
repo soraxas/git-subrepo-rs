@@ -99,15 +99,15 @@ pub fn run(
 
         field!("Tracking Branch:", cfg.branch.cyan());
 
-        if !cfg.commit.is_empty() {
-            if let Some(short) = rev_parse_short(&cfg.commit, &ctx.repo_root) {
-                field!("Pulled Commit:", short.yellow());
-            }
+        if !cfg.commit.is_empty()
+            && let Some(short) = rev_parse_short(&cfg.commit, &ctx.repo_root)
+        {
+            field!("Pulled Commit:", short.yellow());
         }
-        if !cfg.parent.is_empty() {
-            if let Some(short) = rev_parse_short(&cfg.parent, &ctx.repo_root) {
-                field!("Pull Parent:", short.dimmed());
-            }
+        if !cfg.parent.is_empty()
+            && let Some(short) = rev_parse_short(&cfg.parent, &ctx.repo_root)
+        {
+            field!("Pull Parent:", short.dimmed());
         }
 
         if dirty || verbose {

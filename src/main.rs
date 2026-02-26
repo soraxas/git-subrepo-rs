@@ -302,6 +302,7 @@ async fn main() {
                 method,
                 quiet: q,
                 message,
+                stage_only,
                 extra,
             }) => {
                 if all || all_all {
@@ -313,7 +314,17 @@ async fn main() {
                         extra.join(" ")
                     );
                 }
-                commands::clone::run(remote, subdir, branch, force, method, quiet || q, message)
+                commands::clone::run(
+                    remote,
+                    subdir,
+                    branch,
+                    force,
+                    method,
+                    quiet || q,
+                    message,
+                    no_edit,
+                    stage_only,
+                )
             }
             Some(Commands::Init {
                 subdir,
@@ -329,6 +340,7 @@ async fn main() {
                 quiet: q,
                 update,
                 message,
+                stage_only,
             }) => {
                 if !all && !all_all && update && branch.is_none() && remote.is_none() {
                     anyhow::bail!("Can't use '--update' without '--branch' or '--remote'.");
@@ -378,6 +390,7 @@ async fn main() {
                                     update,
                                     message,
                                     no_edit,
+                                    stage_only,
                                     None,
                                 )
                             });
@@ -451,6 +464,7 @@ async fn main() {
                                             update,
                                             message.clone(),
                                             no_edit,
+                                            stage_only,
                                             None,
                                         ) {
                                             Ok(Some(p)) => {
@@ -489,6 +503,7 @@ async fn main() {
                                             update,
                                             message.clone(),
                                             no_edit,
+                                            stage_only,
                                             None,
                                         ) {
                                             Ok(Some(p)) => {
@@ -545,6 +560,7 @@ async fn main() {
                         update,
                         message,
                         no_edit,
+                        stage_only,
                     )
                 }
             }

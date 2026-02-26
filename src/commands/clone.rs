@@ -1,4 +1,6 @@
-use crate::commands::{Context, assert_clean_for, normalize_subdir, subrepo_fetch};
+use crate::commands::{
+    Context, assert_clean_for, edit_message_in_editor, normalize_subdir, subrepo_fetch,
+};
 use crate::encode::encode_subdir;
 use crate::git_utils::{run_git, try_run_git};
 use anyhow::Result;
@@ -11,6 +13,8 @@ pub fn run(
     method: Option<String>,
     quiet: bool,
     message: Option<String>,
+    no_edit: bool,
+    stage_only: bool,
 ) -> Result<()> {
     let mut ctx = Context::new()?;
     ctx.quiet = quiet;
@@ -128,20 +132,22 @@ pub fn run(
         )?;
 
         run_git(&["add", "-f", "--", &gitrepo_path_str], &ctx.repo_root)?;
-        let commit_msg =
+        let default_msg =
             build_clone_commit_message(&subdir, &upstream_head, &remote, &actual_branch, &ctx);
-        run_git(&["commit", "-m", &commit_msg], &ctx.repo_root)?;
+        let commit_msg = message.unwrap_or(default_msg);
 
-        run_git(
-            &[
-                "update-ref",
-                &format!("refs/subrepo/{subref}/commit"),
-                &upstream_head,
-            ],
-            &ctx.repo_root,
+        do_clone_commit(
+            &ctx,
+            &subdir,
+            &subref,
+            &upstream_head,
+            commit_msg,
+            no_edit,
+            stage_only,
+            quiet,
         )?;
 
-        if !quiet {
+        if !quiet && !stage_only {
             println!("Subrepo '{remote}' ({actual_branch}) recloned into '{subdir}'.");
         }
         return Ok(());
@@ -152,12 +158,6 @@ pub fn run(
 
     // Create subdir
     std::fs::create_dir_all(ctx.repo_root.join(&subdir))?;
-
-    // Commit the cloned content
-    let commit_msg = match message {
-        Some(ref m) => m.clone(),
-        None => build_clone_commit_message(&subdir, &upstream_head, &remote, &subrepo_branch, &ctx),
-    };
 
     // Remove subdir from index if it has files
     let (_, ls_out) = try_run_git(&["ls-files", "--", &subdir], &ctx.repo_root);
@@ -189,23 +189,102 @@ pub fn run(
 
     run_git(&["add", "-f", "--", &gitrepo_path_str], &ctx.repo_root)?;
 
-    run_git(&["commit", "-m", &commit_msg], &ctx.repo_root)?;
+    let default_msg =
+        build_clone_commit_message(&subdir, &upstream_head, &remote, &subrepo_branch, &ctx);
+    let commit_msg = message.unwrap_or(default_msg);
 
-    // Update refs
-    run_git(
-        &[
-            "update-ref",
-            &format!("refs/subrepo/{subref}/commit"),
-            &upstream_head,
-        ],
-        &ctx.repo_root,
+    do_clone_commit(
+        &ctx,
+        &subdir,
+        &subref,
+        &upstream_head,
+        commit_msg,
+        no_edit,
+        stage_only,
+        quiet,
     )?;
 
-    if !quiet {
+    if !quiet && !stage_only {
         println!("Subrepo '{remote}' ({subrepo_branch}) cloned into '{subdir}'.");
     }
 
     Ok(())
+}
+
+/// Finalise a clone: either commit (with optional editor) or leave staged.
+#[allow(clippy::too_many_arguments)]
+fn do_clone_commit(
+    ctx: &Context,
+    subdir: &str,
+    subref: &str,
+    upstream_head: &str,
+    commit_msg: String,
+    no_edit: bool,
+    stage_only: bool,
+    quiet: bool,
+) -> Result<()> {
+    use colored::Colorize;
+
+    if stage_only {
+        if !quiet {
+            println!(
+                "{} Changes for '{}' are staged. Review with {} then commit manually.",
+                "ℹ".bright_cyan().bold(),
+                subdir.bold().bright_yellow(),
+                "git diff --cached".bright_cyan(),
+            );
+        }
+        return Ok(());
+    }
+
+    let final_msg = if no_edit {
+        commit_msg
+    } else if std::io::IsTerminal::is_terminal(&std::io::stdout()) {
+        prompt_clone_commit_action(commit_msg, subdir)?
+    } else {
+        edit_message_in_editor(&commit_msg)?
+    };
+
+    run_git(&["commit", "-m", &final_msg], &ctx.repo_root)?;
+    run_git(
+        &[
+            "update-ref",
+            &format!("refs/subrepo/{subref}/commit"),
+            upstream_head,
+        ],
+        &ctx.repo_root,
+    )?;
+
+    Ok(())
+}
+
+/// Interactive 3-way prompt for clone commit finalisation.
+fn prompt_clone_commit_action(default_msg: String, subdir: &str) -> Result<String> {
+    use colored::Colorize;
+    use dialoguer::Select;
+    use dialoguer::theme::ColorfulTheme;
+
+    println!(
+        "\n  {} {}\n",
+        "↓  Clone".bold().bright_cyan(),
+        subdir.bold().bright_yellow(),
+    );
+
+    let choices = vec![
+        "Edit commit message (open editor)",
+        "Commit with default message",
+    ];
+
+    let idx = Select::with_theme(&ColorfulTheme::default())
+        .with_prompt("How to finalise?")
+        .items(&choices)
+        .default(0)
+        .interact()?;
+
+    match idx {
+        0 => edit_message_in_editor(&default_msg),
+        _ => Ok(default_msg),
+    }
 }
 
 fn guess_subdir(remote: &str) -> Result<String> {

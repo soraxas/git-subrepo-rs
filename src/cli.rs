@@ -56,6 +56,9 @@ pub enum Commands {
         quiet: bool,
         #[arg(short = 'm', long)]
         message: Option<String>,
+        /// Stage changes but do not commit (skip commit step entirely)
+        #[arg(long)]
+        stage_only: bool,
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, hide = true)]
         extra: Vec<String>,
     },
@@ -82,6 +85,9 @@ pub enum Commands {
         update: bool,
         #[arg(short = 'm', long)]
         message: Option<String>,
+        /// Stage changes but do not commit (skip commit step entirely)
+        #[arg(long)]
+        stage_only: bool,
     },
     Push {
         subdir: Option<String>,

@@ -623,22 +623,22 @@ pub fn delete_branch_and_worktree(ctx: &Context, subdir: &str, subref: &str) -> 
                 } else if let Some(b) = line.strip_prefix("branch refs/heads/") {
                     current_branch = Some(b.to_string());
                 } else if line.is_empty() {
-                    if current_branch.as_deref() == Some(&branch_name) {
-                        if let Some(ref p) = current_path {
-                            try_run_git(&["worktree", "remove", "--force", p], &ctx.repo_root);
-                            let _ = std::fs::remove_dir_all(p);
-                        }
+                    if current_branch.as_deref() == Some(&branch_name)
+                        && let Some(ref p) = current_path
+                    {
+                        try_run_git(&["worktree", "remove", "--force", p], &ctx.repo_root);
+                        let _ = std::fs::remove_dir_all(p);
                     }
                     current_path = None;
                     current_branch = None;
                 }
             }
             // Handle last stanza (no trailing blank line)
-            if current_branch.as_deref() == Some(&branch_name) {
-                if let Some(ref p) = current_path {
-                    try_run_git(&["worktree", "remove", "--force", p], &ctx.repo_root);
-                    let _ = std::fs::remove_dir_all(p);
-                }
+            if current_branch.as_deref() == Some(&branch_name)
+                && let Some(ref p) = current_path
+            {
+                try_run_git(&["worktree", "remove", "--force", p], &ctx.repo_root);
+                let _ = std::fs::remove_dir_all(p);
             }
         }
     }
@@ -651,18 +651,18 @@ pub fn delete_branch_and_worktree(ctx: &Context, subdir: &str, subref: &str) -> 
     // Step 4: Blast any lock files inside .git/worktrees/*/  that reference our branch,
     // so that `worktree prune` can clean them up (prune skips locked entries).
     let git_worktrees_meta = ctx.repo_root.join(".git").join("worktrees");
-    if git_worktrees_meta.is_dir() {
-        if let Ok(entries) = std::fs::read_dir(&git_worktrees_meta) {
-            for entry in entries.flatten() {
-                let head_file = entry.path().join("HEAD");
-                if let Ok(contents) = std::fs::read_to_string(&head_file) {
-                    let expected = format!("ref: refs/heads/{branch_name}");
-                    if contents.trim() == expected || contents.trim() == branch_name {
-                        // Remove the lock file so prune can remove this stanza.
-                        let _ = std::fs::remove_file(entry.path().join("locked"));
-                        // Also remove the whole metadata dir outright.
-                        let _ = std::fs::remove_dir_all(entry.path());
-                    }
+    if git_worktrees_meta.is_dir()
+        && let Ok(entries) = std::fs::read_dir(&git_worktrees_meta)
+    {
+        for entry in entries.flatten() {
+            let head_file = entry.path().join("HEAD");
+            if let Ok(contents) = std::fs::read_to_string(&head_file) {
+                let expected = format!("ref: refs/heads/{branch_name}");
+                if contents.trim() == expected || contents.trim() == branch_name {
+                    // Remove the lock file so prune can remove this stanza.
+                    let _ = std::fs::remove_file(entry.path().join("locked"));
+                    // Also remove the whole metadata dir outright.
+                    let _ = std::fs::remove_dir_all(entry.path());
                 }
             }
         }

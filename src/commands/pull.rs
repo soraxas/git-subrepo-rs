@@ -18,6 +18,7 @@ pub struct PullPrepared {
     pub join_method: String,
     pub commit_msg: String,
     pub no_edit: bool,
+    pub stage_only: bool,
     pub update_remote: Option<String>,
     pub update_branch: Option<String>,
     /// Number of upstream commits being pulled in (0 = update-only / force re-pull).
@@ -36,6 +37,7 @@ pub fn run(
     update: bool,
     message: Option<String>,
     no_edit: bool,
+    stage_only: bool,
 ) -> Result<()> {
     let mut ctx = Context::new()?;
     ctx.quiet = quiet;
@@ -52,6 +54,7 @@ pub fn run(
         update,
         message,
         no_edit,
+        stage_only,
         None,
     )? {
         commit_prepared(&ctx, prepared, quiet)?;
@@ -74,6 +77,7 @@ pub fn prepare(
     update: bool,
     message: Option<String>,
     no_edit: bool,
+    stage_only: bool,
     pb: Option<indicatif::ProgressBar>,
 ) -> Result<Option<PullPrepared>> {
     let subdir = normalize_subdir(&subdir);
@@ -188,6 +192,7 @@ pub fn prepare(
         join_method: cfg.method,
         commit_msg,
         no_edit: no_edit || has_explicit_message,
+        stage_only,
         update_remote: if update { override_remote } else { None },
         update_branch: if update { override_branch } else { None },
         upstream_commit_count,
@@ -214,12 +219,16 @@ pub fn commit_prepared(ctx: &Context, prepared: PullPrepared, quiet: bool) -> Re
         ref join_method,
         commit_msg,
         no_edit,
+        stage_only,
         ref update_remote,
         ref update_branch,
         upstream_commit_count,
     } = prepared;
 
-    let action = if no_edit {
+    let action = if stage_only {
+        // --stage-only: skip commit entirely, don't even ask.
+        CommitAction::StageOnly
+    } else if no_edit {
         // --no-edit or explicit -m: commit straight away.
         CommitAction::Commit(commit_msg)
     } else if std::io::IsTerminal::is_terminal(&std::io::stdout()) {
@@ -364,7 +373,7 @@ fn build_pull_commit_message(
 fn stage_subrepo_content(
     ctx: &Context,
     subdir: &str,
-    subref: &str,
+    _subref: &str,
     subrepo_commit_ref: &str,
     remote: &str,
     branch: &str,
