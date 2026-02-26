@@ -61,6 +61,36 @@ pub fn run_git_env(args: &[&str], cwd: &Path, envs: &[(&str, &str)]) -> anyhow::
     }
 }
 
+/// Run a git command with stdin/stdout/stderr inherited from the terminal.
+/// Use this for user-visible commits so that GPG prompts, hooks, and progress
+/// are visible and interactive (not silently captured/blocked).
+/// Falls back to captured mode when stdout is not a TTY (tests, piped output).
+pub fn run_git_interactive(args: &[&str], cwd: &Path) -> anyhow::Result<()> {
+    use std::io::IsTerminal;
+    use std::process::Stdio;
+
+    if std::io::stdout().is_terminal() {
+        // Interactive terminal: let git write directly so hooks/GPG/progress are visible.
+        let status = make_cmd(args, cwd)
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .status()?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!(
+                "git {} failed (exit {})",
+                args.join(" "),
+                status.code().unwrap_or(-1)
+            ))
+        }
+    } else {
+        // Non-TTY (tests, piped): capture output and surface errors normally.
+        run_git(args, cwd).map(|_| ())
+    }
+}
+
 /// Run a git command; returns (success, combined_output) without failing.
 pub fn try_run_git(args: &[&str], cwd: &Path) -> (bool, String) {
     match make_cmd(args, cwd).output() {

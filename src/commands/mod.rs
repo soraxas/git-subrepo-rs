@@ -9,7 +9,9 @@ pub mod pull;
 pub mod push;
 pub mod status;
 
-use crate::git_utils::{branch_exists, commit_in_rev_list, rev_exists, run_git, try_run_git};
+use crate::git_utils::{
+    branch_exists, commit_in_rev_list, rev_exists, run_git, run_git_interactive, try_run_git,
+};
 use anyhow::Result;
 use std::path::PathBuf;
 
@@ -159,6 +161,85 @@ pub fn assert_clean_for_subdir(cmd: &str, ctx: &Context, subdir: Option<&str>) -
         let (ok3, _) = try_run_git(&diff_cached_args, &ctx.repo_root);
         if !ok3 {
             anyhow::bail!("Can't {cmd} subrepo. Index has changes.");
+        }
+    }
+
+    Ok(())
+}
+
+/// Like `assert_clean_for` but allows staged changes that are entirely within other subrepo
+/// directories (identified by a co-staged or on-disk `.gitrepo` file).
+///
+/// This enables the workflow of chaining multiple `--stage-only` clones/pulls before
+/// making a single batch commit, while still blocking arbitrary staged changes.
+pub fn assert_clean_for_clone(ctx: &Context, target_subdir: &str) -> Result<()> {
+    run_git(
+        &["update-index", "-q", "--ignore-submodules", "--refresh"],
+        &ctx.repo_root,
+    )?;
+
+    // Always block unstaged modifications to tracked files globally.
+    let (ok_files, _) = try_run_git(
+        &["diff-files", "--quiet", "--ignore-submodules"],
+        &ctx.repo_root,
+    );
+    if !ok_files {
+        anyhow::bail!("Can't clone subrepo. Unstaged changes.");
+    }
+
+    if ctx.original_head_commit.is_empty() {
+        return Ok(());
+    }
+
+    // Block any changes (staged or unstaged) specifically in the target subdir.
+    let (ok_target, _) = try_run_git(
+        &[
+            "diff-index",
+            "--quiet",
+            "--ignore-submodules",
+            "HEAD",
+            "--",
+            target_subdir,
+        ],
+        &ctx.repo_root,
+    );
+    if !ok_target {
+        anyhow::bail!("Can't clone subrepo. Working tree has changes.");
+    }
+
+    // Inspect staged files outside the target subdir.
+    let (ok_list, staged_out) = try_run_git(
+        &["diff-index", "--cached", "--name-only", "HEAD"],
+        &ctx.repo_root,
+    );
+    if !ok_list || staged_out.trim().is_empty() {
+        return Ok(());
+    }
+
+    // Collect the set of subrepo-root dirs: any dir that has a .gitrepo staged
+    // OR already has a .gitrepo on disk.
+    let staged_files: Vec<&str> = staged_out.lines().filter(|l| !l.is_empty()).collect();
+    let mut subrepo_roots: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for f in &staged_files {
+        if f.ends_with("/.gitrepo") {
+            subrepo_roots.insert(f.trim_end_matches("/.gitrepo").to_string());
+        }
+    }
+    // Also scan the working tree for any known .gitrepo files in the index.
+    let (ok_ls, ls_out) = try_run_git(&["ls-files", "--", "*.gitrepo"], &ctx.repo_root);
+    if ok_ls {
+        for f in ls_out.lines().filter(|l| l.ends_with("/.gitrepo")) {
+            subrepo_roots.insert(f.trim_end_matches("/.gitrepo").to_string());
+        }
+    }
+
+    // If every staged file lives under a known subrepo root, it's fine to proceed.
+    for f in &staged_files {
+        let in_subrepo = subrepo_roots
+            .iter()
+            .any(|root| f.starts_with(&format!("{root}/")));
+        if !in_subrepo {
+            anyhow::bail!("Can't clone subrepo. Working tree has changes.");
         }
     }
 
@@ -806,9 +887,7 @@ pub fn subrepo_commit(
         ),
     };
 
-    run_git(&["commit", "-m", &commit_msg], &ctx.repo_root)?;
-
-    // Update commit ref
+    run_git_interactive(&["commit", "-m", &commit_msg], &ctx.repo_root)?;
     run_git(
         &[
             "update-ref",

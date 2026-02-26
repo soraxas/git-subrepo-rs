@@ -3,7 +3,7 @@ use crate::commands::{
     normalize_subdir, subrepo_branch, subrepo_fetch_with_pb,
 };
 use crate::encode::encode_subdir;
-use crate::git_utils::{run_git, try_run_git};
+use crate::git_utils::{run_git, run_git_interactive, try_run_git};
 use crate::gitrepo::read_gitrepo;
 use anyhow::Result;
 
@@ -225,19 +225,7 @@ pub fn commit_prepared(ctx: &Context, prepared: PullPrepared, quiet: bool) -> Re
         upstream_commit_count,
     } = prepared;
 
-    let action = if stage_only {
-        // --stage-only: skip commit entirely, don't even ask.
-        CommitAction::StageOnly
-    } else if no_edit {
-        // --no-edit or explicit -m: commit straight away.
-        CommitAction::Commit(commit_msg)
-    } else if std::io::IsTerminal::is_terminal(&std::io::stdout()) {
-        prompt_commit_action(commit_msg, subdir, remote, branch, upstream_commit_count)?
-    } else {
-        // Non-interactive (piped/CI): open editor (original behaviour).
-        CommitAction::Commit(edit_message_in_editor(&commit_msg)?)
-    };
-
+    // Stage first so we can accurately detect other staged content.
     stage_subrepo_content(
         ctx,
         subdir,
@@ -251,10 +239,31 @@ pub fn commit_prepared(ctx: &Context, prepared: PullPrepared, quiet: bool) -> Re
         update_branch.as_deref(),
     )?;
 
+    let extras = other_staged_subrepos(ctx, subdir);
+
+    let action = if stage_only {
+        CommitAction::StageOnly
+    } else if no_edit && extras.is_empty() {
+        CommitAction::Commit(commit_msg)
+    } else if no_edit && !extras.is_empty() {
+        warn_extra_staged(&extras, subdir);
+        CommitAction::Commit(edit_message_in_editor(&commit_msg)?)
+    } else if std::io::IsTerminal::is_terminal(&std::io::stdout()) {
+        prompt_commit_action(
+            commit_msg,
+            subdir,
+            remote,
+            branch,
+            upstream_commit_count,
+            &extras,
+        )?
+    } else {
+        CommitAction::Commit(edit_message_in_editor(&commit_msg)?)
+    };
+
     match action {
         CommitAction::Commit(msg) => {
-            use crate::git_utils::run_git;
-            run_git(&["commit", "-m", &msg], &ctx.repo_root)?;
+            run_git_interactive(&["commit", "-m", &msg], &ctx.repo_root)?;
             // update commit ref
             run_git(
                 &[
@@ -277,7 +286,6 @@ pub fn commit_prepared(ctx: &Context, prepared: PullPrepared, quiet: bool) -> Re
             }
         }
         CommitAction::StageOnly => {
-            // Clean up worktree but leave index staged so user can inspect / amend.
             crate::commands::delete_branch_and_worktree(ctx, subdir, subref)?;
             use colored::Colorize;
             println!(
@@ -291,6 +299,118 @@ pub fn commit_prepared(ctx: &Context, prepared: PullPrepared, quiet: bool) -> Re
     Ok(())
 }
 
+/// Returns subrepo subdirs staged from previous `--stage-only` ops, excluding `current`.
+fn other_staged_subrepos(ctx: &Context, current_subdir: &str) -> Vec<String> {
+    let (ok, out) = crate::git_utils::try_run_git(
+        &["diff-index", "--cached", "--name-only", "HEAD"],
+        &ctx.repo_root,
+    );
+    if !ok || out.trim().is_empty() {
+        return vec![];
+    }
+    parse_other_staged_roots(&out, current_subdir)
+}
+
+/// Pure helper: given raw `git diff-index --cached --name-only HEAD` output, return the
+/// distinct top-level directory names that are NOT under `current_subdir`.
+/// Kept separate so it can be unit-tested without a real git repo.
+pub(crate) fn parse_other_staged_roots(output: &str, current_subdir: &str) -> Vec<String> {
+    let prefix = format!("{current_subdir}/");
+    let mut roots: std::collections::BTreeSet<String> = Default::default();
+    for line in output.lines().filter(|l| !l.trim().is_empty()) {
+        if line.starts_with(&prefix) || line == current_subdir {
+            continue;
+        }
+        if let Some(root) = std::path::Path::new(line)
+            .components()
+            .next()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        {
+            if root != current_subdir {
+                roots.insert(root);
+            }
+        }
+    }
+    roots.into_iter().collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_other_staged_roots;
+
+    #[test]
+    fn no_staged_files_returns_empty() {
+        assert!(parse_other_staged_roots("", "echo360").is_empty());
+        assert!(parse_other_staged_roots("   \n  \n", "echo360").is_empty());
+    }
+
+    #[test]
+    fn only_current_subrepo_staged_returns_empty() {
+        let output = "echo360/.gitrepo\necho360/README.md\necho360/src/main.rs\n";
+        assert!(parse_other_staged_roots(output, "echo360").is_empty());
+    }
+
+    #[test]
+    fn other_subrepos_detected() {
+        let output = "ooo/.gitrepo\nooo/README.md\ndimensify/Cargo.toml\ndimensify/.gitrepo\necho360/src/main.rs\n";
+        let mut result = parse_other_staged_roots(output, "echo360");
+        result.sort();
+        assert_eq!(result, vec!["dimensify", "ooo"]);
+    }
+
+    #[test]
+    fn mix_current_and_others() {
+        let output = "foo/.gitrepo\nfoo/a.rs\nbar/.gitrepo\nbar/b.rs\nbaz/c.rs\n";
+        let mut result = parse_other_staged_roots(output, "foo");
+        result.sort();
+        assert_eq!(result, vec!["bar", "baz"]);
+    }
+
+    #[test]
+    fn root_level_file_not_in_any_subrepo_included() {
+        // A file like `me` at root gets root component "me", which is returned.
+        let output = "me\nooo/.gitrepo\n";
+        let mut result = parse_other_staged_roots(output, "echo360");
+        result.sort();
+        assert_eq!(result, vec!["me", "ooo"]);
+    }
+
+    #[test]
+    fn deduplicated_roots() {
+        let output = "lib/a.rs\nlib/b.rs\nlib/c.rs\n";
+        assert_eq!(parse_other_staged_roots(output, "current"), vec!["lib"]);
+    }
+
+    #[test]
+    fn sorted_alphabetically() {
+        let output = "zzz/a\naaa/b\nmid/c\n";
+        assert_eq!(
+            parse_other_staged_roots(output, "other"),
+            vec!["aaa", "mid", "zzz"]
+        );
+    }
+}
+
+/// Warn about other staged subrepos that will be bundled into this commit.
+fn warn_extra_staged(extras: &[String], current: &str) {
+    use colored::Colorize;
+    println!(
+        "\n  {} {} other staged subrepo{} will also be included in this commit:",
+        "⚠".yellow().bold(),
+        extras.len().to_string().yellow().bold(),
+        if extras.len() == 1 { "" } else { "s" },
+    );
+    for e in extras {
+        println!("    {} {}", "•".dimmed(), e.bright_yellow());
+    }
+    println!(
+        "  {} Consider editing the message to cover all of them, or stage '{}' too with {}.\n",
+        "→".dimmed(),
+        current,
+        "--stage-only".bright_cyan(),
+    );
+}
+
 /// Ask the user how to finalise a pull commit (interactive TTY only).
 fn prompt_commit_action(
     default_msg: String,
@@ -298,12 +418,12 @@ fn prompt_commit_action(
     remote: &str,
     branch: &str,
     commit_count: usize,
+    extras: &[String],
 ) -> Result<CommitAction> {
     use colored::Colorize;
     use dialoguer::Select;
     use dialoguer::theme::ColorfulTheme;
 
-    // Print a summary header before the selection prompt.
     let commit_word = if commit_count == 1 {
         "commit"
     } else {
@@ -327,11 +447,22 @@ fn prompt_commit_action(
         count_str,
     );
 
-    let choices = vec![
-        "Edit commit message (open editor)",
-        "Commit with default message",
-        "Stage only — don't commit yet",
-    ];
+    if !extras.is_empty() {
+        warn_extra_staged(extras, subdir);
+    }
+
+    let choices: Vec<&str> = if extras.is_empty() {
+        vec![
+            "Edit commit message (open editor)",
+            "Commit with default message",
+            "Stage only — don't commit yet",
+        ]
+    } else {
+        vec![
+            "Edit commit message (covers all staged subrepos)",
+            "Stage only — don't commit yet",
+        ]
+    };
 
     let idx = Select::with_theme(&ColorfulTheme::default())
         .with_prompt("How to finalise?")
@@ -339,13 +470,17 @@ fn prompt_commit_action(
         .default(0)
         .interact()?;
 
-    match idx {
-        0 => {
-            let edited = edit_message_in_editor(&default_msg)?;
-            Ok(CommitAction::Commit(edited))
+    if extras.is_empty() {
+        match idx {
+            0 => Ok(CommitAction::Commit(edit_message_in_editor(&default_msg)?)),
+            1 => Ok(CommitAction::Commit(default_msg)),
+            _ => Ok(CommitAction::StageOnly),
         }
-        1 => Ok(CommitAction::Commit(default_msg)),
-        _ => Ok(CommitAction::StageOnly),
+    } else {
+        match idx {
+            0 => Ok(CommitAction::Commit(edit_message_in_editor(&default_msg)?)),
+            _ => Ok(CommitAction::StageOnly),
+        }
     }
 }
 

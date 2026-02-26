@@ -1,8 +1,8 @@
 use crate::commands::{
-    Context, assert_clean_for, edit_message_in_editor, normalize_subdir, subrepo_fetch,
+    Context, assert_clean_for_clone, edit_message_in_editor, normalize_subdir, subrepo_fetch,
 };
 use crate::encode::encode_subdir;
-use crate::git_utils::{run_git, try_run_git};
+use crate::git_utils::{run_git, run_git_interactive, try_run_git};
 use anyhow::Result;
 
 pub fn run(
@@ -26,13 +26,17 @@ pub fn run(
         std::process::exit(1);
     }
 
-    assert_clean_for("clone", &ctx)?;
-
-    // Determine subdir
+    // Determine subdir first so we can scope the clean check to the target only.
+    // This allows staged changes in *other* subrepo dirs (e.g. a previous --stage-only clone).
     let subdir = match subdir_opt {
         Some(s) => normalize_subdir(&s),
         None => guess_subdir(&remote)?,
     };
+
+    // Only block if the TARGET subdir is dirty or if staged changes are in non-subrepo paths.
+    // This allows chaining multiple --stage-only clones before a single batch commit.
+    assert_clean_for_clone(&ctx, &subdir)?;
+
     let subref = encode_subdir(&subdir);
 
     let gitrepo_path = ctx.repo_root.join(&subdir).join(".gitrepo");
@@ -212,6 +216,25 @@ pub fn run(
 }
 
 /// Finalise a clone: either commit (with optional editor) or leave staged.
+/// Outcome of the interactive clone prompt.
+enum CloneAction {
+    Commit(String),
+    StageOnly,
+}
+
+/// Returns the list of *other* subrepo subdirs that are already staged (from previous
+/// `--stage-only` operations), excluding `current_subdir`.
+fn other_staged_subrepos(ctx: &Context, current_subdir: &str) -> Vec<String> {
+    let (ok, out) = crate::git_utils::try_run_git(
+        &["diff-index", "--cached", "--name-only", "HEAD"],
+        &ctx.repo_root,
+    );
+    if !ok || out.trim().is_empty() {
+        return vec![];
+    }
+    crate::commands::pull::parse_other_staged_roots(&out, current_subdir)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn do_clone_commit(
     ctx: &Context,
@@ -225,41 +248,76 @@ fn do_clone_commit(
 ) -> Result<()> {
     use colored::Colorize;
 
-    if stage_only {
-        if !quiet {
-            println!(
-                "{} Changes for '{}' are staged. Review with {} then commit manually.",
-                "ℹ".bright_cyan().bold(),
-                subdir.bold().bright_yellow(),
-                "git diff --cached".bright_cyan(),
-            );
-        }
-        return Ok(());
-    }
+    let extras = other_staged_subrepos(ctx, subdir);
 
-    let final_msg = if no_edit {
-        commit_msg
+    let action = if stage_only {
+        CloneAction::StageOnly
+    } else if no_edit && extras.is_empty() {
+        // Only auto-commit with default message when there's nothing else staged.
+        CloneAction::Commit(commit_msg)
+    } else if no_edit && !extras.is_empty() {
+        // --no-edit but other staged content exists: must edit to write a batch message.
+        warn_extra_staged(&extras, subdir);
+        CloneAction::Commit(edit_message_in_editor(&commit_msg)?)
     } else if std::io::IsTerminal::is_terminal(&std::io::stdout()) {
-        prompt_clone_commit_action(commit_msg, subdir)?
+        prompt_clone_commit_action(commit_msg, subdir, &extras)?
     } else {
-        edit_message_in_editor(&commit_msg)?
+        CloneAction::Commit(edit_message_in_editor(&commit_msg)?)
     };
 
-    run_git(&["commit", "-m", &final_msg], &ctx.repo_root)?;
-    run_git(
-        &[
-            "update-ref",
-            &format!("refs/subrepo/{subref}/commit"),
-            upstream_head,
-        ],
-        &ctx.repo_root,
-    )?;
+    match action {
+        CloneAction::StageOnly => {
+            if !quiet {
+                println!(
+                    "{} Changes for '{}' are staged. Review with {} then commit manually.",
+                    "ℹ".bright_cyan().bold(),
+                    subdir.bold().bright_yellow(),
+                    "git diff --cached".bright_cyan(),
+                );
+            }
+        }
+        CloneAction::Commit(msg) => {
+            run_git_interactive(&["commit", "-m", &msg], &ctx.repo_root)?;
+            run_git(
+                &[
+                    "update-ref",
+                    &format!("refs/subrepo/{subref}/commit"),
+                    upstream_head,
+                ],
+                &ctx.repo_root,
+            )?;
+        }
+    }
 
     Ok(())
 }
 
+/// Print a warning about other staged subrepos that will be bundled in the commit.
+fn warn_extra_staged(extras: &[String], current: &str) {
+    use colored::Colorize;
+    println!(
+        "\n  {} {} other staged subrepo{} will also be included in this commit:",
+        "⚠".yellow().bold(),
+        extras.len().to_string().yellow().bold(),
+        if extras.len() == 1 { "" } else { "s" },
+    );
+    for e in extras {
+        println!("    {} {}", "•".dimmed(), e.bright_yellow());
+    }
+    println!(
+        "  {} Consider editing the commit message to cover all of them, or use\n  {} to stage '{}' too.\n",
+        "→".dimmed(),
+        "--stage-only".bright_cyan(),
+        current,
+    );
+}
+
 /// Interactive 3-way prompt for clone commit finalisation.
-fn prompt_clone_commit_action(default_msg: String, subdir: &str) -> Result<String> {
+fn prompt_clone_commit_action(
+    default_msg: String,
+    subdir: &str,
+    extras: &[String],
+) -> Result<CloneAction> {
     use colored::Colorize;
     use dialoguer::Select;
     use dialoguer::theme::ColorfulTheme;
@@ -270,10 +328,23 @@ fn prompt_clone_commit_action(default_msg: String, subdir: &str) -> Result<Strin
         subdir.bold().bright_yellow(),
     );
 
-    let choices = vec![
-        "Edit commit message (open editor)",
-        "Commit with default message",
-    ];
+    if !extras.is_empty() {
+        warn_extra_staged(extras, subdir);
+    }
+
+    let choices: Vec<&str> = if extras.is_empty() {
+        vec![
+            "Edit commit message (open editor)",
+            "Commit with default message",
+            "Stage only — don't commit yet",
+        ]
+    } else {
+        // When other staged subrepos exist, "Commit with default message" is misleading.
+        vec![
+            "Edit commit message (covers all staged subrepos)",
+            "Stage only — don't commit yet",
+        ]
+    };
 
     let idx = Select::with_theme(&ColorfulTheme::default())
         .with_prompt("How to finalise?")
@@ -281,9 +352,17 @@ fn prompt_clone_commit_action(default_msg: String, subdir: &str) -> Result<Strin
         .default(0)
         .interact()?;
 
-    match idx {
-        0 => edit_message_in_editor(&default_msg),
-        _ => Ok(default_msg),
+    if extras.is_empty() {
+        match idx {
+            0 => Ok(CloneAction::Commit(edit_message_in_editor(&default_msg)?)),
+            1 => Ok(CloneAction::Commit(default_msg)),
+            _ => Ok(CloneAction::StageOnly),
+        }
+    } else {
+        match idx {
+            0 => Ok(CloneAction::Commit(edit_message_in_editor(&default_msg)?)),
+            _ => Ok(CloneAction::StageOnly),
+        }
     }
 }
 
