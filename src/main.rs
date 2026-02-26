@@ -100,11 +100,7 @@ async fn run_all_parallel(
     total: usize,
     quiet: bool,
     verb_start: &'static str,
-    f: impl Fn(String, indicatif::ProgressBar) -> anyhow::Result<String>
-        + Send
-        + Sync
-        + Clone
-        + 'static,
+    f: impl Fn(String, indicatif::ProgressBar) -> anyhow::Result<String> + Send + Sync + Clone + 'static,
 ) -> anyhow::Result<()> {
     use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
     use std::time::Duration;
@@ -131,7 +127,9 @@ async fn run_all_parallel(
                         .unwrap(),
                 );
                 bar.set_message(
-                    format!("[{cur_idx}/{total}] {verb_start} '{s}'...").bright_cyan().to_string(),
+                    format!("[{cur_idx}/{total}] {verb_start} '{s}'...")
+                        .bright_cyan()
+                        .to_string(),
                 );
                 bar.enable_steady_tick(Duration::from_millis(80));
                 bar
@@ -159,8 +157,7 @@ async fn run_all_parallel(
                         Ok(())
                     }
                     Err(e) => {
-                        let err_line =
-                            format!("{}: {e}", "git-subrepo".red().bold());
+                        let err_line = format!("{}: {e}", "git-subrepo".red().bold());
                         if let Some(ref m) = mp_clone {
                             let _ = m.println(err_line);
                         } else {
@@ -290,7 +287,7 @@ async fn main() {
     let all_all = cli.all_all;
     let force = cli.force;
     let fetch = cli.fetch;
-    let edit = cli.edit;
+    let no_edit = cli.no_edit;
 
     let result: anyhow::Result<()> = async {
         match cli.command {
@@ -380,7 +377,7 @@ async fn main() {
                                     quiet || q,
                                     update,
                                     message,
-                                    edit,
+                                    no_edit,
                                     None,
                                 )
                             });
@@ -453,7 +450,7 @@ async fn main() {
                                             quiet || q,
                                             update,
                                             message.clone(),
-                                            edit,
+                                            no_edit,
                                             None,
                                         ) {
                                             Ok(Some(p)) => {
@@ -491,7 +488,7 @@ async fn main() {
                                             quiet || q,
                                             update,
                                             message.clone(),
-                                            edit,
+                                            no_edit,
                                             None,
                                         ) {
                                             Ok(Some(p)) => {
@@ -547,7 +544,7 @@ async fn main() {
                         quiet || q,
                         update,
                         message,
-                        edit,
+                        no_edit,
                     )
                 }
             }
@@ -680,7 +677,9 @@ async fn main() {
                 quiet: q,
                 verbose: v,
                 dirty,
-            }) => commands::status::run(subdir, quiet || q, verbose || v, fetch, all, all_all, dirty),
+            }) => {
+                commands::status::run(subdir, quiet || q, verbose || v, fetch, all, all_all, dirty)
+            }
             Some(Commands::Clean { subdir, quiet: q }) => {
                 if (all || all_all) && subdir.is_none() {
                     let subrepos = get_all_subrepos(all_all)?;
@@ -710,6 +709,6 @@ async fn main() {
     }
 
     // suppress unused warning
-    let _ = edit;
+    let _ = no_edit;
     let _ = verbose;
 }

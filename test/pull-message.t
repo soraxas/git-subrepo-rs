@@ -17,7 +17,7 @@ subrepo-clone-bar-into-foo
 ) &> /dev/null || die
 
 
-# Do the pull and check output, use -m:
+# Do the pull and check output, use -m (explicit message skips editor):
 {
   is "$(
     cd "$OWNER/foo"
@@ -41,17 +41,17 @@ subrepo-clone-bar-into-foo
   git push
 ) &> /dev/null || die
 
-# Do the pull and check output, use -e:
+# Do the pull with editor open (default behaviour — GIT_EDITOR writes the message):
 {
   is "$(
     cd "$OWNER/foo"
-    GIT_EDITOR='echo cowabunga >' git subrepo pull -e bar
+    GIT_EDITOR='echo cowabunga >' git subrepo pull bar
   )" \
     "Subrepo 'bar' pulled from '$UPSTREAM/bar' (master)." \
     'subrepo pull command output is correct'
 }
 
-# Check -e commit messages
+# Check editor-written commit messages
 {
   foo_new_commit_message="$(cd "$OWNER/foo"; git log --format=%B -n 1)"
   like "$foo_new_commit_message" \
@@ -65,22 +65,22 @@ subrepo-clone-bar-into-foo
   git push
 ) &> /dev/null || die
 
-# Do the pull and check output, use -e and -m:
+# Do the pull with -n (no-edit) and -m (explicit message wins, editor not opened):
 {
   is "$(
     cd "$OWNER/foo"
-    GIT_EDITOR=true git subrepo pull -e -m original bar
+    git subrepo pull -n -m original bar
   )" \
     "Subrepo 'bar' pulled from '$UPSTREAM/bar' (master)." \
     'subrepo pull command output is correct'
 }
 
-# Check -e commit messages
+# Check -n -m commit messages (message should be kept as-is)
 {
   foo_new_commit_message="$(cd "$OWNER/foo"; git log --format=%B -n 1)"
   like "$foo_new_commit_message" \
       "original" \
-      "subrepo pull edit and message commit message"
+      "subrepo pull no-edit with message"
 }
 
 done_testing

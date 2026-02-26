@@ -92,6 +92,28 @@ pub fn normalize_subdir(subdir: &str) -> String {
     s
 }
 
+/// Open the user's editor with `msg` pre-filled; return the edited text.
+/// Honours GIT_EDITOR, VISUAL, EDITOR (in that order), falling back to `vi`.
+pub fn edit_message_in_editor(msg: &str) -> Result<String> {
+    let tmp = std::env::temp_dir().join(format!("git-subrepo-msg-{}", std::process::id()));
+    std::fs::write(&tmp, msg)?;
+    let editor = std::env::var("GIT_EDITOR")
+        .or_else(|_| std::env::var("VISUAL"))
+        .or_else(|_| std::env::var("EDITOR"))
+        .unwrap_or_else(|_| "vi".to_string());
+    let shell_cmd = format!("{} {}", editor, tmp.display());
+    let status = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(&shell_cmd)
+        .status()?;
+    if !status.success() {
+        anyhow::bail!("Editor exited with non-zero status");
+    }
+    let result = std::fs::read_to_string(&tmp)?;
+    let _ = std::fs::remove_file(&tmp);
+    Ok(result)
+}
+
 /// Assert that the working copy is clean.
 /// If `subdir` is Some, only checks for changes within that subtree (used by `branch`).
 pub fn assert_clean_for(cmd: &str, ctx: &Context) -> Result<()> {
@@ -280,10 +302,17 @@ pub fn subrepo_branch(
     }
 
     let worktree = ctx.worktree_path(subdir);
-    run_git(
+    let (ok, err_out) = try_run_git(
         &["worktree", "add", &worktree.to_string_lossy(), &branch_name],
         &ctx.repo_root,
-    )?;
+    );
+    if !ok {
+        anyhow::bail!(
+            "Could not create worktree for '{subdir}':\n  {}\n\n\
+             If a stale worktree remains, run:  git subrepo clean {subdir}",
+            err_out.trim().replace('\n', "\n  ")
+        );
+    }
 
     run_git(
         &[
@@ -574,23 +603,76 @@ pub fn delete_branch_and_worktree(ctx: &Context, subdir: &str, subref: &str) -> 
     let worktree = ctx.worktree_path(subdir);
     let worktree_str = worktree.to_string_lossy().to_string();
 
-    // Try git worktree remove --force first (removes dir + unregisters from git's metadata).
-    // This must happen BEFORE branch deletion because git refuses to delete a branch
-    // that is currently checked out in any worktree.
+    // Step 1: Try `git worktree remove --force` by path.
     try_run_git(
         &["worktree", "remove", "--force", &worktree_str],
         &ctx.repo_root,
     );
 
-    // If the directory is still present (e.g. worktree remove wasn't registered), remove it.
+    // Step 2: Scan `git worktree list --porcelain` for any entry on our branch and remove it.
+    // This handles cases where the registered path differs from what we compute.
+    {
+        let (ok, out) = try_run_git(&["worktree", "list", "--porcelain"], &ctx.repo_root);
+        if ok {
+            let mut current_path: Option<String> = None;
+            let mut current_branch: Option<String> = None;
+            for line in out.lines() {
+                if let Some(path) = line.strip_prefix("worktree ") {
+                    current_path = Some(path.to_string());
+                    current_branch = None;
+                } else if let Some(b) = line.strip_prefix("branch refs/heads/") {
+                    current_branch = Some(b.to_string());
+                } else if line.is_empty() {
+                    if current_branch.as_deref() == Some(&branch_name) {
+                        if let Some(ref p) = current_path {
+                            try_run_git(&["worktree", "remove", "--force", p], &ctx.repo_root);
+                            let _ = std::fs::remove_dir_all(p);
+                        }
+                    }
+                    current_path = None;
+                    current_branch = None;
+                }
+            }
+            // Handle last stanza (no trailing blank line)
+            if current_branch.as_deref() == Some(&branch_name) {
+                if let Some(ref p) = current_path {
+                    try_run_git(&["worktree", "remove", "--force", p], &ctx.repo_root);
+                    let _ = std::fs::remove_dir_all(p);
+                }
+            }
+        }
+    }
+
+    // Step 3: Remove the actual directory if still present.
     if worktree.exists() {
         let _ = std::fs::remove_dir_all(&worktree);
     }
 
-    // Always prune to clean up any stale worktree metadata in .git/worktrees/
+    // Step 4: Blast any lock files inside .git/worktrees/*/  that reference our branch,
+    // so that `worktree prune` can clean them up (prune skips locked entries).
+    let git_worktrees_meta = ctx.repo_root.join(".git").join("worktrees");
+    if git_worktrees_meta.is_dir() {
+        if let Ok(entries) = std::fs::read_dir(&git_worktrees_meta) {
+            for entry in entries.flatten() {
+                let head_file = entry.path().join("HEAD");
+                if let Ok(contents) = std::fs::read_to_string(&head_file) {
+                    let expected = format!("ref: refs/heads/{branch_name}");
+                    if contents.trim() == expected || contents.trim() == branch_name {
+                        // Remove the lock file so prune can remove this stanza.
+                        let _ = std::fs::remove_file(entry.path().join("locked"));
+                        // Also remove the whole metadata dir outright.
+                        let _ = std::fs::remove_dir_all(entry.path());
+                    }
+                }
+            }
+        }
+    }
+
+    // Step 5: Prune any remaining stale registrations.
     try_run_git(&["worktree", "prune"], &ctx.repo_root);
 
-    // Force-delete branch via update-ref so it works even if git thinks it's checked out.
+    // Step 6: Force-delete the branch ref (update-ref -d works even if git thinks it's
+    // checked out, unlike `git branch -D`).
     if branch_exists(&branch_name, &ctx.repo_root) {
         let branch_ref = format!("refs/heads/{branch_name}");
         run_git(&["update-ref", "-d", &branch_ref], &ctx.repo_root)?;

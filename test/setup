@@ -62,6 +62,9 @@ setup_git_config
 # Set the GIT_SUBREPO_ROOT for testing.
 # source "$PWD"/.rc
 
+# Use a no-op editor so pull/clone never blocks waiting for interactive input.
+export GIT_EDITOR=true
+
 # Get the location of this script
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 

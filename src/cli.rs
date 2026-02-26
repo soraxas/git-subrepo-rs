@@ -34,9 +34,9 @@ pub struct Cli {
     #[arg(short = 'F', long = "fetch", global = true)]
     pub fetch: bool,
 
-    /// Edit the commit message
-    #[arg(short = 'e', long, global = true)]
-    pub edit: bool,
+    /// Use the auto-generated commit message without opening an editor
+    #[arg(short = 'n', long = "no-edit", global = true)]
+    pub no_edit: bool,
 
     /// Print this help message
     #[arg(short = 'h', long, global = true, action = clap::ArgAction::Help)]

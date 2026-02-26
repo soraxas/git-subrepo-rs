@@ -1,6 +1,6 @@
 use crate::commands::{
-    Context, assert_clean_for, delete_branch_and_worktree, normalize_subdir, subrepo_branch,
-    subrepo_fetch_with_pb,
+    Context, assert_clean_for, delete_branch_and_worktree, edit_message_in_editor,
+    normalize_subdir, subrepo_branch, subrepo_fetch_with_pb,
 };
 use crate::encode::encode_subdir;
 use crate::git_utils::{run_git, try_run_git};
@@ -17,8 +17,11 @@ pub struct PullPrepared {
     pub branch: String,
     pub join_method: String,
     pub commit_msg: String,
+    pub no_edit: bool,
     pub update_remote: Option<String>,
     pub update_branch: Option<String>,
+    /// Number of upstream commits being pulled in (0 = update-only / force re-pull).
+    pub upstream_commit_count: usize,
 }
 
 /// Full single-subrepo pull (used when not --all).
@@ -32,7 +35,7 @@ pub fn run(
     quiet: bool,
     update: bool,
     message: Option<String>,
-    edit: bool,
+    no_edit: bool,
 ) -> Result<()> {
     let mut ctx = Context::new()?;
     ctx.quiet = quiet;
@@ -48,7 +51,7 @@ pub fn run(
         quiet,
         update,
         message,
-        edit,
+        no_edit,
         None,
     )? {
         commit_prepared(&ctx, prepared, quiet)?;
@@ -70,7 +73,7 @@ pub fn prepare(
     quiet: bool,
     update: bool,
     message: Option<String>,
-    edit: bool,
+    no_edit: bool,
     pb: Option<indicatif::ProgressBar>,
 ) -> Result<Option<PullPrepared>> {
     let subdir = normalize_subdir(&subdir);
@@ -103,6 +106,26 @@ pub fn prepare(
         }
         return Ok(None);
     }
+
+    // Count how many new upstream commits are coming in.
+    let upstream_commit_count = if cfg.commit.is_empty() {
+        // fresh clone-style pull — count all commits in fetch ref
+        let fetch_ref = format!("refs/subrepo/{subref}/fetch");
+        let (ok, out) = try_run_git(&["rev-list", "--count", &fetch_ref], &ctx.repo_root);
+        if ok {
+            out.trim().parse().unwrap_or(0)
+        } else {
+            0
+        }
+    } else {
+        let range = format!("{}..{}", cfg.commit, upstream_head);
+        let (ok, out) = try_run_git(&["rev-list", "--count", &range], &ctx.repo_root);
+        if ok {
+            out.trim().parse().unwrap_or(0)
+        } else {
+            0
+        }
+    };
 
     let branch_name = format!("subrepo/{subref}");
 
@@ -152,11 +175,8 @@ pub fn prepare(
             ctx,
         ),
     };
-    let commit_msg = if edit {
-        edit_message_in_editor(&commit_msg)?
-    } else {
-        commit_msg
-    };
+    // Store whether message was explicitly provided; commit_prepared opens editor if needed.
+    let has_explicit_message = message.is_some();
 
     Ok(Some(PullPrepared {
         subdir,
@@ -167,12 +187,22 @@ pub fn prepare(
         branch: cfg.branch,
         join_method: cfg.method,
         commit_msg,
+        no_edit: no_edit || has_explicit_message,
         update_remote: if update { override_remote } else { None },
         update_branch: if update { override_branch } else { None },
+        upstream_commit_count,
     }))
 }
 
-/// Phase 2 (sequential): commit the prepared content into the main repo.
+/// Action chosen by the user (or inferred from flags) for how to finalise a pull.
+pub enum CommitAction {
+    /// Commit immediately with this message.
+    Commit(String),
+    /// Stage changes but do not commit (leave index dirty).
+    StageOnly,
+}
+
+/// Phase 2 (sequential): commit (or stage) the prepared content into the main repo.
 pub fn commit_prepared(ctx: &Context, prepared: PullPrepared, quiet: bool) -> Result<()> {
     let PullPrepared {
         ref subdir,
@@ -182,12 +212,24 @@ pub fn commit_prepared(ctx: &Context, prepared: PullPrepared, quiet: bool) -> Re
         ref remote,
         ref branch,
         ref join_method,
-        ref commit_msg,
+        commit_msg,
+        no_edit,
         ref update_remote,
         ref update_branch,
+        upstream_commit_count,
     } = prepared;
 
-    do_subrepo_commit(
+    let action = if no_edit {
+        // --no-edit or explicit -m: commit straight away.
+        CommitAction::Commit(commit_msg)
+    } else if std::io::IsTerminal::is_terminal(&std::io::stdout()) {
+        prompt_commit_action(commit_msg, subdir, remote, branch, upstream_commit_count)?
+    } else {
+        // Non-interactive (piped/CI): open editor (original behaviour).
+        CommitAction::Commit(edit_message_in_editor(&commit_msg)?)
+    };
+
+    stage_subrepo_content(
         ctx,
         subdir,
         subref,
@@ -196,35 +238,106 @@ pub fn commit_prepared(ctx: &Context, prepared: PullPrepared, quiet: bool) -> Re
         branch,
         upstream_head,
         join_method,
-        commit_msg,
         update_remote.as_deref(),
         update_branch.as_deref(),
     )?;
 
-    if !quiet {
-        println!("Subrepo '{subdir}' pulled from '{remote}' ({branch}).");
+    match action {
+        CommitAction::Commit(msg) => {
+            use crate::git_utils::run_git;
+            run_git(&["commit", "-m", &msg], &ctx.repo_root)?;
+            // update commit ref
+            run_git(
+                &[
+                    "update-ref",
+                    &format!("refs/subrepo/{subref}/commit"),
+                    branch_name,
+                ],
+                &ctx.repo_root,
+            )?;
+            // Remove worktree
+            crate::commands::delete_branch_and_worktree(ctx, subdir, subref)?;
+            if !quiet {
+                use colored::Colorize;
+                println!(
+                    "Subrepo '{}' pulled from '{}' ({}).",
+                    subdir.bold().bright_yellow(),
+                    remote.bright_blue(),
+                    branch.cyan()
+                );
+            }
+        }
+        CommitAction::StageOnly => {
+            // Clean up worktree but leave index staged so user can inspect / amend.
+            crate::commands::delete_branch_and_worktree(ctx, subdir, subref)?;
+            use colored::Colorize;
+            println!(
+                "{} Changes for '{}' are staged. Review with {} then commit manually.",
+                "ℹ".bright_cyan().bold(),
+                subdir.bold().bright_yellow(),
+                "git diff --cached".bright_cyan(),
+            );
+        }
     }
     Ok(())
 }
 
-fn edit_message_in_editor(msg: &str) -> Result<String> {
-    let tmp = std::env::temp_dir().join(format!("git-subrepo-msg-{}", std::process::id()));
-    std::fs::write(&tmp, msg)?;
-    let editor = std::env::var("GIT_EDITOR")
-        .or_else(|_| std::env::var("VISUAL"))
-        .or_else(|_| std::env::var("EDITOR"))
-        .unwrap_or_else(|_| "vi".to_string());
-    let shell_cmd = format!("{} {}", editor, tmp.display());
-    let status = std::process::Command::new("sh")
-        .arg("-c")
-        .arg(&shell_cmd)
-        .status()?;
-    if !status.success() {
-        anyhow::bail!("Editor exited with non-zero status");
+/// Ask the user how to finalise a pull commit (interactive TTY only).
+fn prompt_commit_action(
+    default_msg: String,
+    subdir: &str,
+    remote: &str,
+    branch: &str,
+    commit_count: usize,
+) -> Result<CommitAction> {
+    use colored::Colorize;
+    use dialoguer::Select;
+    use dialoguer::theme::ColorfulTheme;
+
+    // Print a summary header before the selection prompt.
+    let commit_word = if commit_count == 1 {
+        "commit"
+    } else {
+        "commits"
+    };
+    let count_str = if commit_count == 0 {
+        "(re-pull / update)".dimmed().to_string()
+    } else {
+        format!(
+            "{} {} from {} ({})",
+            commit_count.to_string().bold().bright_green(),
+            commit_word,
+            remote.bright_blue(),
+            branch.cyan(),
+        )
+    };
+    println!(
+        "\n  {} {}: {}\n",
+        "↓  Pull".bold().bright_cyan(),
+        subdir.bold().bright_yellow(),
+        count_str,
+    );
+
+    let choices = vec![
+        "Edit commit message (open editor)",
+        "Commit with default message",
+        "Stage only — don't commit yet",
+    ];
+
+    let idx = Select::with_theme(&ColorfulTheme::default())
+        .with_prompt("How to finalise?")
+        .items(&choices)
+        .default(0)
+        .interact()?;
+
+    match idx {
+        0 => {
+            let edited = edit_message_in_editor(&default_msg)?;
+            Ok(CommitAction::Commit(edited))
+        }
+        1 => Ok(CommitAction::Commit(default_msg)),
+        _ => Ok(CommitAction::StageOnly),
     }
-    let result = std::fs::read_to_string(&tmp)?;
-    let _ = std::fs::remove_file(&tmp);
-    Ok(result)
 }
 
 fn build_pull_commit_message(
@@ -245,8 +358,10 @@ fn build_pull_commit_message(
     )
 }
 
+/// Stage the subrepo content into the main repo index (no commit).
+/// Called by `commit_prepared` before either committing or leaving staged.
 #[allow(clippy::too_many_arguments)]
-fn do_subrepo_commit(
+fn stage_subrepo_content(
     ctx: &Context,
     subdir: &str,
     subref: &str,
@@ -255,7 +370,6 @@ fn do_subrepo_commit(
     branch: &str,
     upstream_head_commit: &str,
     join_method: &str,
-    commit_msg: &str,
     update_remote: Option<&str>,
     update_branch: Option<&str>,
 ) -> Result<()> {
@@ -295,7 +409,6 @@ fn do_subrepo_commit(
     let gitrepo_rel = format!("{subdir}/.gitrepo");
 
     if gitrepo_path.exists() {
-        // File exists from read-tree: update specific fields only
         crate::gitrepo::update_gitrepo(
             &gitrepo_path,
             update_remote,
@@ -307,8 +420,6 @@ fn do_subrepo_commit(
             &ctx.repo_root,
         )?;
     } else {
-        // File does not exist (filter-branch removed it from subrepo branch).
-        // Try to restore it from original_head_commit (same as bash's update-gitrepo-file).
         let (cat_ok, cat_out) = try_run_git(
             &[
                 "cat-file",
@@ -318,7 +429,6 @@ fn do_subrepo_commit(
             &ctx.repo_root,
         );
         if cat_ok && !cat_out.is_empty() {
-            // Restore old .gitrepo (preserves parent field etc.) then update fields
             std::fs::write(&gitrepo_path, cat_out + "\n")?;
             crate::gitrepo::update_gitrepo(
                 &gitrepo_path,
@@ -331,7 +441,6 @@ fn do_subrepo_commit(
                 &ctx.repo_root,
             )?;
         } else {
-            // Truly new: write from scratch
             crate::gitrepo::write_new_gitrepo(
                 &gitrepo_path,
                 update_remote.unwrap_or(remote),
@@ -346,19 +455,6 @@ fn do_subrepo_commit(
     }
 
     run_git(&["add", "-f", "--", &gitrepo_path_str], &ctx.repo_root)?;
-    run_git(&["commit", "-m", commit_msg], &ctx.repo_root)?;
-
-    run_git(
-        &[
-            "update-ref",
-            &format!("refs/subrepo/{subref}/commit"),
-            subrepo_commit_ref,
-        ],
-        &ctx.repo_root,
-    )?;
-
-    // Remove worktree
-    crate::commands::delete_branch_and_worktree(ctx, subdir, subref)?;
 
     Ok(())
 }

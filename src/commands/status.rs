@@ -5,6 +5,23 @@ use crate::gitrepo::read_gitrepo;
 use anyhow::Result;
 use colored::Colorize;
 
+/// Label column width (chars). Value starts at col 2 + LABEL_W + 2 = 22.
+const LABEL_W: usize = 18;
+/// Indent for continuation lines — matches value column (2 + 18 + 2 = 22 spaces).
+const CONT_INDENT: &str = "                      ";
+
+/// Print a single aligned `  Label:  Value` line.
+macro_rules! field {
+    ($label:expr, $value:expr) => {
+        println!(
+            "  {:<width$}  {}",
+            $label.bold().green().to_string(),
+            $value,
+            width = LABEL_W
+        )
+    };
+}
+
 pub fn run(
     subdir_opt: Option<String>,
     quiet: bool,
@@ -32,13 +49,11 @@ pub fn run(
         return Ok(());
     }
 
-    if !subdirs.is_empty() && !quiet {
+    if !subdirs.is_empty() && !quiet && !has_subdir {
         let count = subdirs.len();
         let s = if count == 1 { "" } else { "s" };
-        if !has_subdir {
-            println!("{}", format!("{count} subrepo{s}:").bold());
-            println!();
-        }
+        println!("{}", format!("{count} subrepo{s}:").bold());
+        println!();
     }
 
     for subdir in &subdirs {
@@ -65,51 +80,39 @@ pub fn run(
             continue;
         }
 
-        let refs_subrepo_fetch = format!("refs/subrepo/{subref}/fetch");
-        let upstream_short = rev_parse_short(&refs_subrepo_fetch, &ctx.repo_root);
-
         println!(
             "{} '{}':",
             "Git subrepo".bold().bright_cyan(),
             subdir.bold().bright_yellow()
         );
+
         if branch_exists(&format!("subrepo/{subref}"), &ctx.repo_root) {
-            println!("  {}  subrepo/{subref}", "Subrepo Branch:".bold().green());
+            field!("Subrepo Branch:", format!("subrepo/{subref}").cyan());
         }
-        println!(
-            "  {}  {}",
-            "Remote URL:     ".bold().green(),
-            cfg.remote.bright_blue()
-        );
-        if let Some(ref us) = upstream_short {
-            println!("  {}  {}", "Upstream Ref:   ".bold().green(), us.yellow());
+
+        field!("Remote URL:", cfg.remote.bright_blue());
+
+        let refs_subrepo_fetch = format!("refs/subrepo/{subref}/fetch");
+        if let Some(us) = rev_parse_short(&refs_subrepo_fetch, &ctx.repo_root) {
+            field!("Upstream Ref:", us.yellow());
         }
-        println!(
-            "  {}  {}",
-            "Tracking Branch:".bold().green(),
-            cfg.branch.cyan()
-        );
-        if !cfg.commit.is_empty()
-            && let Some(short) = rev_parse_short(&cfg.commit, &ctx.repo_root)
-        {
-            println!(
-                "  {}  {}",
-                "Pulled Commit:  ".bold().green(),
-                short.yellow()
-            );
+
+        field!("Tracking Branch:", cfg.branch.cyan());
+
+        if !cfg.commit.is_empty() {
+            if let Some(short) = rev_parse_short(&cfg.commit, &ctx.repo_root) {
+                field!("Pulled Commit:", short.yellow());
+            }
         }
-        if !cfg.parent.is_empty()
-            && let Some(short) = rev_parse_short(&cfg.parent, &ctx.repo_root)
-        {
-            println!(
-                "  {}  {}",
-                "Pull Parent:    ".bold().green(),
-                short.dimmed()
-            );
+        if !cfg.parent.is_empty() {
+            if let Some(short) = rev_parse_short(&cfg.parent, &ctx.repo_root) {
+                field!("Pull Parent:", short.dimmed());
+            }
         }
 
         if dirty || verbose {
             print_dirty_status(&ctx, subdir, &cfg.parent);
+            print_upstream_status(&ctx, &subref, subdir, &cfg.commit);
         }
 
         if verbose {
@@ -141,7 +144,6 @@ fn get_all_subrepos(ctx: &Context, _all: bool, all_all: bool) -> Result<Vec<Stri
 
     paths.sort();
 
-    // Filter out subrepos that are nested within other subrepos (unless all_all)
     if all_all {
         return Ok(paths);
     }
@@ -158,19 +160,27 @@ fn get_all_subrepos(ctx: &Context, _all: bool, all_all: bool) -> Result<Vec<Stri
     Ok(result)
 }
 
-/// Count commits in the main repo touching `subdir/` since the last pull (parent commit).
-/// Prints a colored line showing how many unpushed commits exist.
+/// Print how many local commits touch `subdir/` since the last pull,
+/// ignoring subrepo maintenance commits.
 fn print_dirty_status(ctx: &Context, subdir: &str, parent: &str) {
-    // Commits reachable from HEAD that touch subdir/ but are not reachable from `parent`
-    // (i.e. were made locally since the last pull/clone).
     let range = if parent.is_empty() {
         "HEAD".to_string()
     } else {
         format!("{parent}..HEAD")
     };
     let subdir_path = format!("{subdir}/");
+    let gitrepo_exclude = format!(":(exclude){subdir}/.gitrepo");
     let (ok, out) = try_run_git(
-        &["log", "--oneline", &range, "--", &subdir_path],
+        &[
+            "log",
+            "--oneline",
+            "--invert-grep",
+            "--grep=^git subrepo ",
+            &range,
+            "--",
+            &subdir_path,
+            &gitrepo_exclude,
+        ],
         &ctx.repo_root,
     );
     if !ok {
@@ -179,28 +189,73 @@ fn print_dirty_status(ctx: &Context, subdir: &str, parent: &str) {
     let commits: Vec<&str> = out.lines().filter(|l| !l.is_empty()).collect();
     let n = commits.len();
     if n == 0 {
-        println!(
-            "  {}  {}",
-            "Unpushed:       ".bold().green(),
-            "none".dimmed()
-        );
+        field!("Unpushed:", "up to date".dimmed());
     } else {
-        let label = if n == 1 {
-            format!("{n} unpushed commit").yellow().bold().to_string()
-        } else {
-            format!("{n} unpushed commits").yellow().bold().to_string()
-        };
-        println!(
-            "  {}  {} — run: {}",
-            "Unpushed:       ".bold().green(),
-            label,
-            format!("git subrepo push {subdir}").bright_cyan()
-        );
+        let s = if n == 1 { "commit" } else { "commits" };
+        let summary = format!("{n} unpushed {s}").yellow().bold().to_string();
+        let hint = format!("git subrepo push {subdir}")
+            .bright_cyan()
+            .to_string();
+        field!("Unpushed:", format!("{summary}  →  {hint}"));
         for line in commits.iter().take(5) {
-            println!("    {}", line.dimmed());
+            println!("{CONT_INDENT}{}", line.dimmed());
         }
         if n > 5 {
-            println!("    {} …and {} more", "".dimmed(), (n - 5).to_string().dimmed());
+            println!("{CONT_INDENT}{}", format!("…and {} more", n - 5).dimmed());
+        }
+    }
+}
+
+/// Show upstream commits available to pull (based on last fetch).
+fn print_upstream_status(ctx: &Context, subref: &str, subdir: &str, pulled_commit: &str) {
+    let fetch_ref = format!("refs/subrepo/{subref}/fetch");
+
+    let (ok, fetch_sha) = try_run_git(&["rev-parse", &fetch_ref], &ctx.repo_root);
+    if !ok || fetch_sha.trim().is_empty() {
+        field!(
+            "Upstream:",
+            format!("not fetched  →  {}", "git subrepo fetch".bright_cyan())
+        );
+        return;
+    }
+    let fetch_sha = fetch_sha.trim();
+
+    if pulled_commit.is_empty()
+        || fetch_sha.starts_with(pulled_commit)
+        || pulled_commit.starts_with(fetch_sha)
+    {
+        field!("Upstream:", "up to date".dimmed());
+        return;
+    }
+
+    let range = format!("{pulled_commit}..{fetch_ref}");
+    let (ok2, out) = try_run_git(&["log", "--oneline", &range], &ctx.repo_root);
+    if !ok2 {
+        field!(
+            "Upstream:",
+            format!("diverged  →  {}", "git subrepo pull".bright_cyan())
+        );
+        return;
+    }
+    let ahead: Vec<&str> = out.lines().filter(|l| !l.is_empty()).collect();
+    let n = ahead.len();
+    if n == 0 {
+        field!("Upstream:", "up to date".dimmed());
+    } else {
+        let s = if n == 1 { "commit" } else { "commits" };
+        let summary = format!("{n} new upstream {s}")
+            .bright_magenta()
+            .bold()
+            .to_string();
+        let hint = format!("git subrepo pull {subdir}")
+            .bright_cyan()
+            .to_string();
+        field!("Upstream:", format!("{summary}  →  {hint}"));
+        for line in ahead.iter().take(5) {
+            println!("{CONT_INDENT}{}", line.dimmed());
+        }
+        if n > 5 {
+            println!("{CONT_INDENT}{}", format!("…and {} more", n - 5).dimmed());
         }
     }
 }
@@ -212,7 +267,7 @@ fn print_status_refs(ctx: &Context, subref: &str) {
     }
 
     let prefix = format!("refs/subrepo/{subref}/");
-    let mut output = String::new();
+    let mut lines: Vec<String> = Vec::new();
 
     for line in out.lines() {
         let parts: Vec<&str> = line.splitn(2, ' ').collect();
@@ -221,51 +276,33 @@ fn print_status_refs(ctx: &Context, subref: &str) {
         }
         let sha = parts[0];
         let ref_name = parts[1];
-
         if !ref_name.starts_with(&prefix) {
             continue;
         }
-
         let ref_type = &ref_name[prefix.len()..];
         let short_sha = crate::git_utils::rev_parse_short(sha, &ctx.repo_root)
             .unwrap_or_else(|| sha[..7.min(sha.len())].to_string());
-
-        match ref_type {
-            "branch" => {
-                output += &format!(
-                    "    {}  {short_sha} ({ref_name})\n",
-                    "Branch Ref:   ".bold().green()
-                )
-            }
-            "commit" => {
-                output += &format!(
-                    "    {}  {short_sha} ({ref_name})\n",
-                    "Commit Ref:   ".bold().green()
-                )
-            }
-            "fetch" => {
-                output += &format!(
-                    "    {}  {short_sha} ({ref_name})\n",
-                    "Fetch Ref:    ".bold().green()
-                )
-            }
-            "pull" => {
-                output += &format!(
-                    "    {}  {short_sha} ({ref_name})\n",
-                    "Pull Ref:     ".bold().green()
-                )
-            }
-            "push" => {
-                output += &format!(
-                    "    {}  {short_sha} ({ref_name})\n",
-                    "Push Ref:     ".bold().green()
-                )
-            }
-            _ => {}
-        }
+        let label = match ref_type {
+            "branch" => "Branch Ref:",
+            "commit" => "Commit Ref:",
+            "fetch" => "Fetch Ref:",
+            "pull" => "Pull Ref:",
+            "push" => "Push Ref:",
+            _ => continue,
+        };
+        lines.push(format!(
+            "  {:<width$}  {} {}",
+            label.bold().green().to_string(),
+            short_sha.yellow(),
+            format!("({ref_name})").dimmed(),
+            width = LABEL_W
+        ));
     }
 
-    if !output.is_empty() {
-        print!("  Refs:\n{output}");
+    if !lines.is_empty() {
+        println!("  {}", "─".repeat(40).dimmed());
+        for l in lines {
+            println!("{l}");
+        }
     }
 }
