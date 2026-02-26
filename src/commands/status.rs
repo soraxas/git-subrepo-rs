@@ -1,4 +1,4 @@
-use crate::commands::{Context, normalize_subdir, subrepo_fetch};
+use crate::commands::{Context, normalize_subdir, subrepo_fetch_with_pb};
 use crate::encode::encode_subdir;
 use crate::git_utils::{branch_exists, rev_parse_short, try_run_git};
 use crate::gitrepo::read_gitrepo;
@@ -97,8 +97,8 @@ pub fn run(
             std::thread::scope(|s| {
                 for ((_, remote, branch, subref), pb) in tasks.iter().zip(bars.iter()) {
                     s.spawn(|| {
-                        // Best-effort — ignore errors (remote may be unreachable)
-                        let _ = subrepo_fetch(&ctx, remote, branch, subref);
+                        // Pass our MultiProgress-owned bar so subrepo_fetch doesn't create its own
+                        let _ = subrepo_fetch_with_pb(&ctx, remote, branch, subref, Some(pb));
                         pb.finish_and_clear();
                     });
                 }
