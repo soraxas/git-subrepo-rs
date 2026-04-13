@@ -39,12 +39,12 @@ repos:
       - id: shellcheck
         priority: 0
   - repo: https://github.com/rvben/rumdl-pre-commit
-    rev: v0.0.211
+    rev: v0.1.71
     hooks:
       - id: rumdl-fmt  # Auto-format (fixes what it can)
 
   - repo: https://github.com/crate-ci/typos
-    rev: v1.41.0
+    rev: v1
     hooks:
       - id: typos
 
@@ -66,6 +66,6 @@ repos:
         entry: cargo clippy -- -D warnings
 
   - repo: https://github.com/biomejs/pre-commit
-    rev: v2.3.10
+    rev: v2.4.11
     hooks:
       - id: biome-check
