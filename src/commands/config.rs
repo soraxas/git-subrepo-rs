@@ -9,7 +9,9 @@ pub fn run(subdir: String, key: String, value: Option<String>, force: bool) -> R
     let gitrepo_path = ctx.repo_root.join(&subdir).join(".gitrepo");
     let gitrepo_path_str = gitrepo_path.to_string_lossy().into_owned();
 
-    let valid_keys = ["branch", "cmdver", "commit", "method", "remote", "version"];
+    let valid_keys = [
+        "branch", "cmdver", "commit", "method", "remote", "upstream", "version",
+    ];
     if !valid_keys.contains(&key.as_str()) {
         anyhow::bail!("Option {key} not recognized");
     }
@@ -24,8 +26,10 @@ pub fn run(subdir: String, key: String, value: Option<String>, force: bool) -> R
         );
         if ok {
             println!("Subrepo '{subdir}' option '{key}' has value '{out}'.");
+        } else if !gitrepo_path.exists() {
+            anyhow::bail!("'{subdir}' has no .gitrepo file (not a subrepo?).");
         } else {
-            anyhow::bail!("Failed to read config key '{key}'");
+            anyhow::bail!("Subrepo '{subdir}' option '{key}' is not set.");
         }
         return Ok(());
     }

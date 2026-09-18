@@ -10,6 +10,7 @@ pub mod pull;
 pub mod push;
 pub mod status;
 pub mod sync;
+pub mod workon;
 
 use crate::git_utils::{
     branch_exists, commit_in_rev_list, rev_exists, run_git, run_git_interactive, try_run_git,
@@ -83,6 +84,24 @@ impl Context {
     pub fn worktree_display(&self, subdir: &str) -> String {
         format!("{}/tmp/subrepo/{}", self.git_common_dir_display, subdir)
     }
+}
+
+/// Returns true if `branch_name` (a `subrepo/<subref>` branch) is stale relative to mainline,
+/// i.e. commits have touched `subdir` since the branch was last built from it.
+/// Assumes the caller has already verified `branch_name` exists.
+pub fn branch_is_stale(ctx: &Context, subdir: &str, branch_name: &str) -> bool {
+    let subdir_path = format!("{subdir}/");
+    let (_, new_commits) = try_run_git(
+        &[
+            "rev-list",
+            "--ancestry-path",
+            &format!("{branch_name}..HEAD"),
+            "--",
+            &subdir_path,
+        ],
+        &ctx.repo_root,
+    );
+    !new_commits.trim().is_empty()
 }
 
 /// Normalize a subdir path (remove leading ./, trailing /, collapse //).
@@ -359,6 +378,121 @@ pub fn subrepo_fetch_with_pb(
     Ok(upstream_head)
 }
 
+/// If `branch_name` collides with an existing `subrepo/*` branch in the git ref
+/// namespace (one is a path-prefix of the other, so both can't coexist as refs —
+/// e.g. `subrepo/embodx` blocks `subrepo/embodx/crates/potree-rs`), return that
+/// other branch's name.
+pub fn find_ref_collision(ctx: &Context, branch_name: &str) -> Option<String> {
+    let (ok, out) = try_run_git(
+        &[
+            "for-each-ref",
+            "--format=%(refname:short)",
+            "refs/heads/subrepo",
+        ],
+        &ctx.repo_root,
+    );
+    if !ok {
+        return None;
+    }
+    out.lines().find_map(|line| {
+        let line = line.trim();
+        if line.is_empty() || line == branch_name {
+            return None;
+        }
+        if branch_name.starts_with(&format!("{line}/"))
+            || line.starts_with(&format!("{branch_name}/"))
+        {
+            Some(line.to_string())
+        } else {
+            None
+        }
+    })
+}
+
+/// Prune now-empty ancestor directories left behind under `.git/tmp/subrepo/` after removing
+/// a nested subrepo's worktree (e.g. removing `foo/bar`'s worktree leaves `.git/tmp/subrepo/foo/`
+/// behind, empty — it was never a worktree itself). Left alone, such a stale directory can later
+/// be mistaken for a live worktree of `foo` by any `.exists()`-based check.
+pub fn prune_empty_worktree_ancestors(ctx: &Context, worktree: &std::path::Path) {
+    let subrepo_tmp_root = ctx.git_common_dir.join("tmp").join("subrepo");
+    let mut dir = worktree.parent();
+    while let Some(d) = dir {
+        if d == subrepo_tmp_root || !d.starts_with(&subrepo_tmp_root) {
+            break;
+        }
+        match std::fs::read_dir(d) {
+            Ok(mut entries) => {
+                if entries.next().is_some() {
+                    break;
+                }
+                let _ = std::fs::remove_dir(d);
+            }
+            Err(_) => break,
+        }
+        dir = d.parent();
+    }
+}
+
+/// True only if `path` is a real worktree with uncommitted changes. A path that exists but
+/// isn't a valid worktree (e.g. a stale empty directory left behind by an incomplete cleanup)
+/// makes `git status` fail rather than return dirty output — that must not be read as "dirty".
+pub fn worktree_is_dirty(path: &std::path::Path) -> bool {
+    let (ok, out) = try_run_git(&["status", "--porcelain"], path);
+    ok && !out.trim().is_empty()
+}
+
+/// `colliding` blocks creating `branch_name` in the git ref namespace (see
+/// `find_ref_collision`). If it's safe to discard (no uncommitted worktree
+/// changes — it's always rebuildable from mainline via `branch`/`workon`),
+/// offer to remove it interactively; otherwise bail with instructions.
+fn resolve_ref_collision(ctx: &Context, branch_name: &str, colliding: &str) -> Result<()> {
+    // Our naming scheme uses subdir == subref for ordinary paths (see `encode_subdir`),
+    // so this reverse mapping is exact except for names needing ref-unsafe-char escaping.
+    let colliding_subdir = colliding.strip_prefix("subrepo/").unwrap_or(colliding);
+    let worktree = ctx.worktree_path(colliding_subdir);
+    let dirty = worktree_is_dirty(&worktree);
+
+    eprintln!(
+        "git-subrepo: '{}' already exists and blocks creating '{}'\n  \
+         (a git branch can't be both a leaf and a path-prefix of another).",
+        colliding.yellow().bold(),
+        branch_name
+    );
+
+    if dirty {
+        anyhow::bail!(
+            "Worktree for '{colliding}' has uncommitted changes. Commit, stash, or push them, \
+             then run 'git subrepo clean {colliding_subdir}' before retrying."
+        );
+    }
+
+    use dialoguer::Select;
+    let choices = &[
+        format!(
+            "Remove '{colliding}' and continue (rebuildable later with 'git subrepo branch {colliding_subdir}')"
+        ),
+        "Abort".to_string(),
+    ];
+    let selection = Select::with_theme(&dialoguer::theme::ColorfulTheme::default())
+        .with_prompt("How to proceed?")
+        .items(choices)
+        .default(0)
+        .interact_opt();
+
+    match selection {
+        Ok(Some(0)) => {
+            delete_branch_and_worktree(ctx, colliding_subdir, colliding_subdir)?;
+            eprintln!("Removed branch '{colliding}'.");
+            Ok(())
+        }
+        _ => {
+            anyhow::bail!(
+                "Aborted. Run 'git subrepo clean {colliding_subdir}' first, or resolve manually."
+            );
+        }
+    }
+}
+
 /// Perform the subrepo:branch operation.
 /// Returns the worktree path.
 pub fn subrepo_branch(
@@ -370,6 +504,10 @@ pub fn subrepo_branch(
     force: bool,
 ) -> Result<PathBuf> {
     let branch_name = format!("subrepo/{subref}");
+
+    if let Some(colliding) = find_ref_collision(ctx, &branch_name) {
+        resolve_ref_collision(ctx, &branch_name, &colliding)?;
+    }
 
     if branch_exists(&branch_name, &ctx.repo_root) {
         if force {
@@ -1136,6 +1274,7 @@ pub fn delete_branch_and_worktree(ctx: &Context, subdir: &str, subref: &str) -> 
     if worktree.exists() {
         let _ = std::fs::remove_dir_all(&worktree);
     }
+    prune_empty_worktree_ancestors(ctx, &worktree);
 
     // Step 4: Blast any lock files inside .git/worktrees/*/  that reference our branch,
     // so that `worktree prune` can clean them up (prune skips locked entries).

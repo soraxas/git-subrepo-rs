@@ -114,6 +114,19 @@ pub enum Commands {
     Branch {
         subdir: Option<String>,
     },
+    /// Open a worktree for a subrepo with remotes wired up: `git push` always reaches
+    /// `remote` (your write target, as always); `git pull`/`fetch` reach `upstream` if
+    /// one is configured (the original project), otherwise `remote` too.
+    Workon {
+        subdir: String,
+        /// Fetch/pull source, i.e. the original project. Overrides .gitrepo's `upstream` key
+        /// for this run.
+        #[arg(short = 'u', long)]
+        upstream: Option<String>,
+        /// Don't spawn an interactive shell; just print the worktree path.
+        #[arg(long)]
+        no_shell: bool,
+    },
     Commit {
         subdir: String,
         subrepo_commit_ref: Option<String>,

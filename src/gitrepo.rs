@@ -15,6 +15,9 @@ pub struct GitrepoConfig {
     pub cmdver: String,
     /// If true, run git hooks on commit (default: false = --no-verify)
     pub verify: bool,
+    /// Optional URL of the original project, used by `workon` as the fetch/pull source
+    /// (while `remote` stays the push destination, as it always has been).
+    pub upstream: String,
 }
 
 /// Read a .gitrepo file using git config.
@@ -40,6 +43,7 @@ pub fn read_gitrepo(path: &Path, repo_root: &Path) -> Result<GitrepoConfig> {
         },
         cmdver: get("cmdver"),
         verify: get("verify") == "true",
+        upstream: get("upstream"),
     })
 }
 

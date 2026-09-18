@@ -123,6 +123,67 @@ git subrepo branch [<subdir>] [-f]
 
 Scans mainline history and creates a branch `subrepo/<subdir>` containing only commits that touched `<subdir>`. Useful for manual merge/rebase workflows.
 
+### `workon` — Enter a subrepo worktree with real remotes wired up
+
+```text
+git subrepo workon <subdir> [-u <upstream-url>] [--no-shell]
+```
+
+Opens the same kind of worktree as `branch` (at `.git/tmp/subrepo/<subdir>`,
+on branch `subrepo/<subdir>`), but wires it up with real remotes:
+
+- Plain `git push`/`git pull`/`git fetch` (no arguments) always reach
+  `remote` — exactly like `git subrepo push`/`pull` already do. This never
+  changes, regardless of `upstream`.
+- If `upstream` is configured (via `-u/--upstream`, or a persisted
+  `upstream` key — see below), it's *also* added as a plain named remote —
+  `git fetch upstream`, `git push upstream ...` — for explicit, deliberate
+  use. It is never the default target for a bare push/pull.
+
+Use `upstream` when `remote` is your own fork of someone else's project,
+and you occasionally want to pull in or push to the original directly, by
+name, without disturbing the default `remote` target.
+
+On a terminal, `workon` drops you into a subshell with its working directory
+set to the worktree; exit the shell to return. In scripts/CI (non-TTY), or
+with `--no-shell`, it just prints the path.
+
+```bash
+git subrepo workon lib/mylib                                   # own repo, plain push/pull — no upstream needed
+git subrepo workon lib/mylib -u git@github.com:someone/mylib   # your fork of someone else's repo
+```
+
+Persist an upstream so you don't have to pass `-u` every time:
+
+```bash
+git subrepo config lib/mylib upstream git@github.com:someone/mylib --force
+```
+
+**Curating what goes public** (own repo with private "secret sauce"
+commits mixed in): `workon` gives you the full local history for the
+subdir, unfiltered — hand-pick what to publish with `git rebase -i` /
+cherry-pick onto a clean branch, then push *that*. Secret commits stay
+local; nothing is pushed unless you push it.
+
+**Fork workflow, end to end**: someone else's project, with `remote` set to
+your own fork and `upstream` set to the original project.
+
+1. `git subrepo workon <subdir>` → make changes, plain `git push` (lands on
+   your fork, `remote`, as always).
+2. Open a PR from your fork to the original project by hand.
+3. Once it's merged: still inside the `workon` session,
+   `git fetch upstream && git merge upstream/<branch>` (or `git pull
+   upstream <branch>`), then `git push` — pulls the merged result from the
+   original project and pushes it to your own fork, keeping the two in sync.
+4. Back in the main repo, `git subrepo pull <subdir>` re-fetches from
+   `remote` (now up to date) and re-pins `.gitrepo` — this also correctly
+   keeps any local-only commits you never pushed.
+
+**Caution**: `workon`'s worktree is not protected from `push`/`pull`/
+`branch --force` run elsewhere — those rebuild it from mainline history and
+will discard anything you haven't pushed yet. Finish and push from the
+`workon` session before running those on the same subdir.
+
 ### `commit` — Finalise a manual merge
 
 ```text
@@ -245,6 +306,7 @@ Every subrepo directory contains a `.gitrepo` file that tracks its state:
 - `commit` — the upstream commit that is currently checked in
 - `parent` — the main repo commit that was HEAD when this subrepo was last pulled/cloned. Used to find local-only commits when pushing.
 - `method` — `merge` (default) or `rebase`
+- `upstream` — optional; the original project's URL (when `remote` is your own fork of it). `git subrepo workon` adds it as a plain named `upstream` remote for explicit use — `remote` stays the default push/pull target either way. Not written by `clone`/`init`, only via `config`.
 
 The `.gitrepo` file is committed to **your** repo but is **not** pushed to the upstream subrepo remote.
 

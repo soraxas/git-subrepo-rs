@@ -60,6 +60,11 @@ fn print_no_command_help() {
         ),
         ("commit", "<subdir>", "Commit a merged branch into mainline"),
         (
+            "workon",
+            "<subdir>",
+            "Open a subrepo worktree wired up with real remotes",
+        ),
+        (
             "status",
             "[<subdir>]",
             "Show subrepo status (fetches + dirty info by default)",
@@ -251,17 +256,27 @@ async fn main() {
                 }
                 ErrorKind::MissingRequiredArgument => {
                     let rendered = e.render().to_string();
-                    if rendered.contains("<SUBDIR>") {
+                    // Only look at the "were not provided" list, not the full rendered
+                    // error — the trailing "Usage: ..." line always shows every
+                    // positional for the command regardless of which one is actually
+                    // missing, so matching against the whole string produces false
+                    // positives (e.g. `config <subdir>` with no <key> would otherwise
+                    // be misreported as missing <subdir>, which was provided).
+                    let missing = rendered.split("Usage:").next().unwrap_or(&rendered);
+
+                    if missing.contains("<SUBDIR>") {
                         // Find which subcommand was invoked via env args
                         let known_cmds = [
-                            "clone", "init", "pull", "push", "fetch", "branch", "commit", "status",
-                            "clean", "config", "sync", "fix",
+                            "clone", "init", "pull", "push", "fetch", "branch", "commit", "workon",
+                            "status", "clean", "config", "sync", "fix",
                         ];
                         let cmd = std::env::args()
                             .find(|a| known_cmds.contains(&a.as_str()))
                             .unwrap_or_default();
                         format!("Command '{}' requires arg 'subdir'.", cmd)
-                    } else if rendered.contains("<REMOTE>")
+                    } else if missing.contains("<KEY>") {
+                        "Command 'config' requires arg 'key'.".to_string()
+                    } else if missing.contains("<REMOTE>")
                         && std::env::args()
                             .any(|a| a == "--all" || a == "-a" || a == "--ALL" || a == "-A")
                     {
@@ -670,6 +685,11 @@ async fn main() {
                 message,
                 verify,
             ),
+            Some(Commands::Workon {
+                subdir,
+                upstream,
+                no_shell,
+            }) => commands::workon::run(subdir, upstream, force, quiet, no_shell),
             Some(Commands::Status {
                 subdir,
                 no_dirty,

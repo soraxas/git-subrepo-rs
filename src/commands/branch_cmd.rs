@@ -1,6 +1,6 @@
-use crate::commands::{Context, normalize_subdir, subrepo_branch, subrepo_fetch};
+use crate::commands::{Context, branch_is_stale, normalize_subdir, subrepo_branch, subrepo_fetch};
 use crate::encode::encode_subdir;
-use crate::git_utils::{branch_exists, try_run_git};
+use crate::git_utils::branch_exists;
 use crate::gitrepo::read_gitrepo;
 use anyhow::Result;
 use colored::Colorize;
@@ -31,31 +31,21 @@ pub fn run(subdir: String, force: bool, fetch: bool, quiet: bool) -> Result<()> 
     // Preflight: if the branch already exists, check whether re-creating it would produce
     // a different result. If no new commits touch the subdir since the branch was last
     // built, the existing branch is already correct — no --force needed.
-    if !force && branch_exists(&branch_name, &ctx.repo_root) {
-        let subdir_path = format!("{subdir}/");
-        let (_, new_commits) = try_run_git(
-            &[
-                "rev-list",
-                "--ancestry-path",
-                &format!("{}..HEAD", branch_name),
-                "--",
-                &subdir_path,
-            ],
-            &ctx.repo_root,
-        );
-        if new_commits.trim().is_empty() {
-            // Branch is already current. Reuse it.
-            if !quiet {
-                println!("Branch '{branch_name}' is already up to date.");
-                if worktree_path.exists() && std::io::stdout().is_terminal() {
-                    println!("  {}", format!("cd '{worktree_display}'").bright_cyan());
-                }
+    if !force
+        && branch_exists(&branch_name, &ctx.repo_root)
+        && !branch_is_stale(&ctx, &subdir, &branch_name)
+    {
+        // Branch is already current. Reuse it.
+        if !quiet {
+            println!("Branch '{branch_name}' is already up to date.");
+            if worktree_path.exists() && std::io::stdout().is_terminal() {
+                println!("  {}", format!("cd '{worktree_display}'").bright_cyan());
             }
-            return Ok(());
         }
-        // There ARE new commits — fall through to recreate with force=true
-        // (user opted not to pass --force, but we detected drift so we recreate)
+        return Ok(());
     }
+    // If there ARE new commits, fall through to recreate with force=true
+    // (user opted not to pass --force, but we detected drift so we recreate)
 
     match subrepo_branch(
         &ctx,

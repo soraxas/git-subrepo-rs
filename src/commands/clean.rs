@@ -1,4 +1,4 @@
-use crate::commands::{Context, normalize_subdir};
+use crate::commands::{Context, normalize_subdir, prune_empty_worktree_ancestors};
 use crate::encode::encode_subdir;
 use crate::git_utils::{branch_exists, try_run_git};
 use anyhow::Result;
@@ -20,6 +20,7 @@ pub fn run(subdir: Option<String>, force: bool, quiet: bool) -> Result<()> {
     if worktree.exists() {
         std::fs::remove_dir_all(&worktree)?;
         try_run_git(&["worktree", "prune"], &ctx.repo_root);
+        prune_empty_worktree_ancestors(&ctx, &worktree);
     }
 
     // Remove branch if exists

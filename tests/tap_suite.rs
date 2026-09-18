@@ -78,4 +78,5 @@ tap_test!(reclone, "reclone.t");
 tap_test!(status, "status.t");
 tap_test!(submodule, "submodule.t");
 tap_test!(verify_config, "verify-config.t");
+tap_test!(workon, "workon.t");
 tap_test!(zsh, "zsh.t");
