@@ -55,7 +55,11 @@ pub fn run(
     let worktree_path = ctx.worktree_path(&subdir);
 
     let exists = branch_exists(&branch_name, &ctx.repo_root);
-    let reused = !force && exists && !branch_is_stale(&ctx, &subdir, &branch_name);
+    // A branch that's up to date is only truly "reused" if its worktree directory is
+    // still there — it can vanish under us (manual `rm -rf`, cleaned-up CI workspace)
+    // without the branch itself being touched.
+    let reused =
+        !force && exists && worktree_path.is_dir() && !branch_is_stale(&ctx, &subdir, &branch_name);
 
     if !reused {
         // About to (re)build the branch/worktree. If one already exists and holds
@@ -153,6 +157,14 @@ pub fn run(
             println!("  {}", format!("cd '{worktree_display}'").bright_cyan());
         }
         return Ok(());
+    }
+
+    // Spawning with a nonexistent `current_dir` fails with the same ENOENT as a
+    // missing shell binary, which would otherwise misleadingly blame $SHELL — this
+    // should be unreachable given the rebuild above, but check explicitly rather
+    // than risk a confusing error message.
+    if !worktree_path.is_dir() {
+        anyhow::bail!("Worktree '{worktree_display}' does not exist after setup — this is a bug.");
     }
 
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());

@@ -82,6 +82,24 @@ is "$(
   Note: \`git subrepo push/pull\` on this subdir elsewhere rebuilds this worktree from mainline and discards anything not pushed from here yet." \
   "second workon call reuses the existing worktree"
 
+# If the worktree directory is deleted out from under git (e.g. a manual
+# `rm -rf`) while the branch itself is untouched, workon must rebuild the
+# worktree rather than blindly reporting "Resumed" for a directory that no
+# longer exists.
+rm -rf "$OWNER"/foo/.git/tmp/subrepo/bar
+
+is "$(
+  cd "$OWNER"/foo
+  git subrepo workon bar --no-shell
+)" \
+  "Opened workon session for 'bar' at '.git/tmp/subrepo/bar'.
+  remote:   $UPSTREAM/bar [$DEFAULTBRANCH] (default push/pull)
+  upstream: $ORIGINAL_URL (added as remote 'upstream' — use e.g. \`git fetch upstream\`)
+  Note: \`git subrepo push/pull\` on this subdir elsewhere rebuilds this worktree from mainline and discards anything not pushed from here yet." \
+  "workon rebuilds the worktree if its directory was deleted, instead of reporting 'Resumed'"
+
+test-exists "$OWNER"/foo/.git/tmp/subrepo/bar/
+
 # Without a configured upstream, no 'upstream' remote should be added at all.
 (
   cd "$OWNER"/foo
