@@ -8,6 +8,22 @@ use anyhow::Result;
 use colored::Colorize;
 use std::io::IsTerminal;
 
+/// Ask `url` (via `ls-remote`, no local fetch) what its default branch is, for when
+/// `remote`'s tracked branch doesn't exist there (e.g. a feature branch created only
+/// after forking). Read-only; returns `None` on any failure.
+fn upstream_default_branch(ctx: &Context, url: &str) -> Option<String> {
+    let (ok, out) = try_run_git(&["ls-remote", "--symref", url, "HEAD"], &ctx.repo_root);
+    if !ok {
+        return None;
+    }
+    out.lines().find_map(|line| {
+        line.strip_prefix("ref: refs/heads/")?
+            .split_whitespace()
+            .next()
+            .map(str::to_string)
+    })
+}
+
 /// Best-effort, read-only check: has `pinned` (the commit this subrepo is currently
 /// pinned to) been rebased/force-pushed away on `url`'s `branch`? Fetches into a
 /// throwaway ref (never touches the working tree or FETCH_HEAD) and checks ancestry
@@ -183,12 +199,33 @@ pub fn run(
         // after upstream moves further. Never fatal: offline, wrong branch name, etc.
         // just means no marker this time, not a broken `workon`.
         if upstream_ready {
-            let (fetch_ok, _) = try_run_git(
-                &["fetch", "--no-tags", "--quiet", "upstream", &cfg.branch],
+            // `remote`'s tracked branch (e.g. a feature branch created after forking)
+            // often simply doesn't exist on `upstream` — fall back to upstream's own
+            // default branch rather than giving up.
+            let mut upstream_branch = cfg.branch.clone();
+            let mut fetch_ok = try_run_git(
+                &[
+                    "fetch",
+                    "--no-tags",
+                    "--quiet",
+                    "upstream",
+                    &upstream_branch,
+                ],
                 &ctx.repo_root,
-            );
+            )
+            .0;
+            if !fetch_ok && let Some(default_branch) = upstream_default_branch(&ctx, url) {
+                fetch_ok = try_run_git(
+                    &["fetch", "--no-tags", "--quiet", "upstream", &default_branch],
+                    &ctx.repo_root,
+                )
+                .0;
+                if fetch_ok {
+                    upstream_branch = default_branch;
+                }
+            }
             if fetch_ok {
-                let upstream_tracking_ref = format!("refs/remotes/upstream/{}", cfg.branch);
+                let upstream_tracking_ref = format!("refs/remotes/upstream/{upstream_branch}");
                 if let Some(upstream_tip) = rev_parse(&upstream_tracking_ref, &ctx.repo_root) {
                     let (base_ok, base) =
                         try_run_git(&["merge-base", &branch_name, &upstream_tip], &ctx.repo_root);

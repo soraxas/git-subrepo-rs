@@ -259,6 +259,49 @@ is "$(
   " (tag: bar2-upstream-base, upstream/$DEFAULTBRANCH)" \
   "the divergence tag and the upstream tracking ref both decorate the same commit in git log"
 
+# `config`'s write to bar2/.gitrepo above is never committed — clean the
+# tree before the next `clone`, which asserts a clean tree of its own.
+(
+  cd "$OWNER"/foo
+  git add bar2/.gitrepo
+  git commit -qm "pin bar2 upstream"
+)
+
+# If `remote`'s tracked branch doesn't exist on `upstream` at all (a common
+# case: a feature branch created only after forking), workon must fall back
+# to upstream's own default branch rather than silently giving up.
+(
+  cd "$UPSTREAM"/fork2-src
+  git checkout -q -b feature-only-on-fork
+  echo "v4-feature" >>lib.rs
+  git add lib.rs
+  git commit -qm "me: feature-only-on-fork change"
+  git push -q "$UPSTREAM"/fork2.git feature-only-on-fork:feature-only-on-fork
+)
+
+(
+  cd "$OWNER"/foo
+  git subrepo clean bar2
+  git subrepo clone "$UPSTREAM"/fork2.git bar3 -b feature-only-on-fork >/dev/null
+  git subrepo config bar3 upstream "$UPSTREAM"/original.git --force >/dev/null
+)
+
+is "$(
+  cd "$OWNER"/foo
+  git subrepo workon bar3 --no-shell >/dev/null
+  cd .git/tmp/subrepo/bar3
+  git rev-parse upstream/"$DEFAULTBRANCH"
+)" \
+  "$DIVERGE_POINT" \
+  "workon falls back to upstream's default branch when remote's tracked branch doesn't exist there"
+
+is "$(
+  cd "$OWNER"/foo
+  git rev-parse bar3-upstream-base 2>/dev/null || true
+)" \
+  "$DIVERGE_POINT" \
+  "the divergence tag is still found correctly via the fallback branch"
+
 done_testing
 
 teardown

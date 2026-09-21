@@ -163,6 +163,10 @@ e4b15601 chore: rename `new` to `load`                                       <- 
 The tag stays put even if the real `upstream` remote moves further later;
 re-running `workon` refreshes both the tracking ref and the tag together.
 
+If `remote`'s tracked branch doesn't exist on `upstream` at all — common
+when a feature branch was created only after forking — `workon` falls back
+to `upstream`'s own default branch automatically.
+
 On a terminal, `workon` drops you into a subshell with its working directory
 set to the worktree; exit the shell to return. In scripts/CI (non-TTY), or
 with `--no-shell`, it just prints the path.
