@@ -2,11 +2,52 @@ use crate::commands::{
     Context, branch_is_stale, normalize_subdir, subrepo_branch, worktree_is_dirty,
 };
 use crate::encode::encode_subdir;
-use crate::git_utils::{branch_exists, run_git, try_run_git};
+use crate::git_utils::{branch_exists, rev_parse, rev_parse_short, run_git, try_run_git};
 use crate::gitrepo::read_gitrepo;
 use anyhow::Result;
 use colored::Colorize;
 use std::io::IsTerminal;
+
+/// Best-effort, read-only check: has `pinned` (the commit this subrepo is currently
+/// pinned to) been rebased/force-pushed away on `url`'s `branch`? Fetches into a
+/// throwaway ref (never touches the working tree or FETCH_HEAD) and checks ancestry
+/// locally. Returns the remote's current tip (short SHA) if it has drifted away from
+/// `pinned`, or `None` if aligned, unpinned, or the fetch itself failed (e.g. offline —
+/// this must never block `workon`, it's advisory only).
+fn check_drift(
+    ctx: &Context,
+    url: &str,
+    branch: &str,
+    pinned: &str,
+    scratch_ref: &str,
+) -> Option<String> {
+    if pinned.is_empty() {
+        return None;
+    }
+    let (ok, _) = try_run_git(
+        &[
+            "fetch",
+            "--no-tags",
+            "--quiet",
+            url,
+            &format!("+refs/heads/{branch}:{scratch_ref}"),
+        ],
+        &ctx.repo_root,
+    );
+    if !ok {
+        return None;
+    }
+    let tip = rev_parse(scratch_ref, &ctx.repo_root)?;
+    let (is_ancestor, _) = try_run_git(
+        &["merge-base", "--is-ancestor", pinned, &tip],
+        &ctx.repo_root,
+    );
+    if is_ancestor {
+        None
+    } else {
+        rev_parse_short(&tip, &ctx.repo_root)
+    }
+}
 
 /// Open a `subrepo/<subdir>` worktree wired up with real remotes:
 ///   - plain `git push`/`git pull`/`git fetch` always reach `remote` — exactly like
@@ -23,10 +64,12 @@ use std::io::IsTerminal;
 /// there, not just a remote name), scoped to the unique `subrepo/<subdir>` branch
 /// name — so it can't collide with anything. The `upstream` remote (added only when
 /// configured) is a deliberate exception: it's meant to be invoked by name.
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     subdir: String,
     upstream_override: Option<String>,
     force: bool,
+    fetch: bool,
     quiet: bool,
     no_shell: bool,
 ) -> Result<()> {
@@ -128,6 +171,47 @@ pub fn run(
         }
     }
 
+    // Opt-in (network cost): has `remote`/`upstream`'s branch moved past the pinned
+    // commit in a way that means it was rebased/force-pushed, not just fast-forwarded?
+    // Advisory only — never attempted to auto-resolve; `git subrepo pull` is the right
+    // tool for that, since it requires real conflict resolution.
+    if fetch {
+        if let Some(tip_short) = check_drift(
+            &ctx,
+            &cfg.remote,
+            &cfg.branch,
+            &cfg.commit,
+            &format!("refs/subrepo/{subref}/workon-drift-check"),
+        ) {
+            let pinned_short = cfg.commit.get(..7).unwrap_or(&cfg.commit);
+            eprintln!(
+                "{} remote's {} has moved past the pinned commit ({pinned_short}) — it looks like \
+                 it was rebased/force-pushed since (remote is now at {tip_short}). Merging here \
+                 will likely hit real conflicts from that rewrite.\n  Recommended: run \
+                 `git subrepo pull {subdir}` first to re-sync.",
+                "⚠".yellow().bold(),
+                cfg.branch
+            );
+        }
+        if let Some(url) = &upstream_url
+            && let Some(tip_short) = check_drift(
+                &ctx,
+                url,
+                &cfg.branch,
+                &cfg.commit,
+                &format!("refs/subrepo/{subref}/workon-drift-check-upstream"),
+            )
+        {
+            let pinned_short = cfg.commit.get(..7).unwrap_or(&cfg.commit);
+            eprintln!(
+                "{} upstream's {} has moved past the pinned commit ({pinned_short}) — \
+                 current upstream tip is {tip_short}.",
+                "⚠".yellow().bold(),
+                cfg.branch
+            );
+        }
+    }
+
     if !quiet {
         println!(
             "{} workon session for '{}' at '{}'.",
@@ -135,8 +219,13 @@ pub fn run(
             subdir.green().bold(),
             worktree_display
         );
+        let pin_note = if cfg.commit.is_empty() {
+            String::new()
+        } else {
+            format!(", pinned @ {}", cfg.commit.get(..7).unwrap_or(&cfg.commit))
+        };
         println!(
-            "  remote:   {} [{}] (default push/pull)",
+            "  remote:   {} [{}] (default push/pull{pin_note})",
             cfg.remote, cfg.branch
         );
         if let Some(url) = &upstream_url {

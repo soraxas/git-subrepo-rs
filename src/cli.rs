@@ -114,13 +114,16 @@ pub enum Commands {
     Branch {
         subdir: Option<String>,
     },
-    /// Open a worktree for a subrepo with remotes wired up: `git push` always reaches
-    /// `remote` (your write target, as always); `git pull`/`fetch` reach `upstream` if
-    /// one is configured (the original project), otherwise `remote` too.
+    /// Open a worktree for a subrepo with remotes wired up: bare `git push`/`pull`/
+    /// `fetch` always reach `remote`, exactly as `git subrepo push`/`pull` already do.
+    /// If `upstream` is configured (the original project, when `remote` is your own
+    /// fork of it), it's added as a plain named `upstream` remote for explicit use
+    /// (`git fetch upstream`, ...) — never the default. Pass `--fetch`/`-F` to also
+    /// check (network required) whether `remote`/`upstream` have moved past the
+    /// pinned commit in a way that looks like a rebase, before opening the worktree.
     Workon {
         subdir: String,
-        /// Fetch/pull source, i.e. the original project. Overrides .gitrepo's `upstream` key
-        /// for this run.
+        /// The original project's URL. Overrides .gitrepo's `upstream` key for this run.
         #[arg(short = 'u', long)]
         upstream: Option<String>,
         /// Don't spawn an interactive shell; just print the worktree path.

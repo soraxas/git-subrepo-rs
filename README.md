@@ -184,6 +184,27 @@ your own fork and `upstream` set to the original project.
 will discard anything you haven't pushed yet. Finish and push from the
 `workon` session before running those on the same subdir.
 
+**When `remote`/`upstream` gets rebased out from under you**: `workon`
+always rebuilds faithfully from whatever `.gitrepo` currently has pinned —
+if the real remote's branch has since been force-pushed/rebased, the
+worktree's reconstructed history won't align with the remote's *current*
+tip, and a merge there will surface confusing, large-scale conflicts from
+that rewrite. This isn't something `workon` can safely auto-fix — that
+requires actual human judgement, which is exactly what `git subrepo pull
+<subdir>` is for (fetch, merge/rebase, resolve, re-pin `.gitrepo`). Run
+`workon` with `-F/--fetch` to check for this *before* it drops you into the
+worktree — it fetches `remote` (and `upstream`, if configured) and warns if
+the pinned commit is no longer an ancestor of their current tip, pointing
+you at `git subrepo pull` instead of guessing:
+
+```bash
+git subrepo workon lib/mylib -F
+# ⚠ remote's main has moved past the pinned commit (8756900) — it looks like
+#   it was rebased/force-pushed since (remote is now at a1b2c3d). Merging here
+#   will likely hit real conflicts from that rewrite.
+#   Recommended: run `git subrepo pull lib/mylib` first to re-sync.
+```
+
 ### `commit` — Finalise a manual merge
 
 ```text

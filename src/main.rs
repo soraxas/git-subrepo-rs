@@ -689,7 +689,7 @@ async fn main() {
                 subdir,
                 upstream,
                 no_shell,
-            }) => commands::workon::run(subdir, upstream, force, quiet, no_shell),
+            }) => commands::workon::run(subdir, upstream, force, fetch, quiet, no_shell),
             Some(Commands::Status {
                 subdir,
                 no_dirty,

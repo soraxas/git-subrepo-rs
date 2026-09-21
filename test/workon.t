@@ -20,6 +20,9 @@ subrepo-clone-bar-into-foo
 ORIGINAL_URL="$UPSTREAM/bar-original"
 gitrepo=$OWNER/foo/bar/.gitrepo
 
+PINNED=$(cd "$OWNER"/foo && git config -f bar/.gitrepo subrepo.commit)
+PINNED_SHORT=${PINNED:0:7}
+
 is "$(
   cd "$OWNER"/foo
   git subrepo config bar upstream "$ORIGINAL_URL" --force
@@ -34,7 +37,7 @@ is "$(
   git subrepo workon bar --no-shell
 )" \
   "Opened workon session for 'bar' at '.git/tmp/subrepo/bar'.
-  remote:   $UPSTREAM/bar [$DEFAULTBRANCH] (default push/pull)
+  remote:   $UPSTREAM/bar [$DEFAULTBRANCH] (default push/pull, pinned @ $PINNED_SHORT)
   upstream: $ORIGINAL_URL (added as remote 'upstream' — use e.g. \`git fetch upstream\`)
   Note: \`git subrepo push/pull\` on this subdir elsewhere rebuilds this worktree from mainline and discards anything not pushed from here yet." \
   "subrepo workon command output is correct"
@@ -77,7 +80,7 @@ is "$(
   git subrepo workon bar --no-shell
 )" \
   "Resumed workon session for 'bar' at '.git/tmp/subrepo/bar'.
-  remote:   $UPSTREAM/bar [$DEFAULTBRANCH] (default push/pull)
+  remote:   $UPSTREAM/bar [$DEFAULTBRANCH] (default push/pull, pinned @ $PINNED_SHORT)
   upstream: $ORIGINAL_URL (added as remote 'upstream' — use e.g. \`git fetch upstream\`)
   Note: \`git subrepo push/pull\` on this subdir elsewhere rebuilds this worktree from mainline and discards anything not pushed from here yet." \
   "second workon call reuses the existing worktree"
@@ -93,7 +96,7 @@ is "$(
   git subrepo workon bar --no-shell
 )" \
   "Opened workon session for 'bar' at '.git/tmp/subrepo/bar'.
-  remote:   $UPSTREAM/bar [$DEFAULTBRANCH] (default push/pull)
+  remote:   $UPSTREAM/bar [$DEFAULTBRANCH] (default push/pull, pinned @ $PINNED_SHORT)
   upstream: $ORIGINAL_URL (added as remote 'upstream' — use e.g. \`git fetch upstream\`)
   Note: \`git subrepo push/pull\` on this subdir elsewhere rebuilds this worktree from mainline and discards anything not pushed from here yet." \
   "workon rebuilds the worktree if its directory was deleted, instead of reporting 'Resumed'"
@@ -113,7 +116,7 @@ is "$(
   git subrepo workon bar --no-shell
 )" \
   "Opened workon session for 'bar' at '.git/tmp/subrepo/bar'.
-  remote:   $UPSTREAM/bar [$DEFAULTBRANCH] (default push/pull)
+  remote:   $UPSTREAM/bar [$DEFAULTBRANCH] (default push/pull, pinned @ $PINNED_SHORT)
   Note: \`git subrepo push/pull\` on this subdir elsewhere rebuilds this worktree from mainline and discards anything not pushed from here yet." \
   "workon without a configured upstream adds no 'upstream' remote"
 
@@ -145,6 +148,42 @@ is "$(
 )" \
   "https://example.com/unrelated.git" \
   "the pre-existing unrelated 'upstream' remote is left untouched"
+
+# `-F/--fetch` on a healthy, aligned remote should stay silent — no drift.
+(
+  cd "$OWNER"/foo
+  git remote remove upstream
+  git config --file bar/.gitrepo --unset subrepo.upstream
+)
+
+is "$(
+  cd "$OWNER"/foo
+  git subrepo workon bar --no-shell -F 2>&1 >/dev/null
+)" \
+  "" \
+  "-F prints nothing when remote hasn't drifted from the pinned commit"
+
+# If remote's branch is force-pushed/rebased past the pinned commit, `-F`
+# must warn and point at `git subrepo pull`, rather than silently building a
+# worktree whose reconstructed history no longer aligns with the real remote.
+(
+  cd "$OWNER"/bar
+  git checkout -q --orphan rewritten-history
+  git rm -qrf . 2>/dev/null
+  echo "totally rewritten" >file
+  git add file
+  git commit -qm "rewritten history"
+  git push -q --force "$UPSTREAM"/bar HEAD:"$DEFAULTBRANCH"
+)
+REMOTE_TIP_SHORT=$(cd "$OWNER"/bar && git rev-parse --short HEAD)
+
+is "$(
+  cd "$OWNER"/foo
+  git subrepo workon bar --no-shell -F 2>&1 >/dev/null
+)" \
+  "⚠ remote's $DEFAULTBRANCH has moved past the pinned commit ($PINNED_SHORT) — it looks like it was rebased/force-pushed since (remote is now at $REMOTE_TIP_SHORT). Merging here will likely hit real conflicts from that rewrite.
+  Recommended: run \`git subrepo pull bar\` first to re-sync." \
+  "workon -F warns when remote has been rebased past the pinned commit"
 
 done_testing
 
