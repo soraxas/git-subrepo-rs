@@ -37,8 +37,8 @@ is "$(
   git subrepo workon bar --no-shell
 )" \
   "Opened workon session for 'bar' at '.git/tmp/subrepo/bar'.
-  remote:   $UPSTREAM/bar [$DEFAULTBRANCH] (default push/pull, pinned @ $PINNED_SHORT)
-  upstream: $ORIGINAL_URL (added as remote 'upstream' — use e.g. \`git fetch upstream\`)
+  remote:   $UPSTREAM/bar [$DEFAULTBRANCH] (default push/pull, pinned @ $PINNED_SHORT, as remote 'bar-remote' — see it with \`git log\`)
+  upstream: $ORIGINAL_URL (added as remote 'bar-upstream' — use e.g. \`git fetch bar-upstream\`)
   Note: \`git subrepo push/pull\` on this subdir elsewhere rebuilds this worktree from mainline and discards anything not pushed from here yet." \
   "subrepo workon command output is correct"
 
@@ -48,8 +48,15 @@ is "$(
   cd "$OWNER"/foo
   git config --get branch.subrepo/bar.remote
 )" \
+  "bar-remote" \
+  "branch.<name>.remote (default push/pull) points at the real named 'bar-remote' remote"
+
+is "$(
+  cd "$OWNER"/foo
+  git remote get-url bar-remote
+)" \
   "$UPSTREAM/bar" \
-  "branch.<name>.remote (default push/pull) points at bar's own remote"
+  "'bar-remote' was added as a plain named remote pointing at bar's own remote"
 
 is "$(
   cd "$OWNER"/foo
@@ -67,21 +74,21 @@ is "$(
 
 is "$(
   cd "$OWNER"/foo
-  git remote get-url upstream
+  git remote get-url bar-upstream
 )" \
   "$ORIGINAL_URL" \
-  "'upstream' was added as a plain named remote for explicit use"
+  "'bar-upstream' was added as a plain named remote for explicit use"
 
 # Re-running with no new commits touching the subdir should reuse the
 # existing worktree/branch rather than rebuilding it, and re-adding the
-# 'upstream' remote must be idempotent (not error on the second call).
+# named remotes must be idempotent (not error on the second call).
 is "$(
   cd "$OWNER"/foo
   git subrepo workon bar --no-shell
 )" \
   "Resumed workon session for 'bar' at '.git/tmp/subrepo/bar'.
-  remote:   $UPSTREAM/bar [$DEFAULTBRANCH] (default push/pull, pinned @ $PINNED_SHORT)
-  upstream: $ORIGINAL_URL (added as remote 'upstream' — use e.g. \`git fetch upstream\`)
+  remote:   $UPSTREAM/bar [$DEFAULTBRANCH] (default push/pull, pinned @ $PINNED_SHORT, as remote 'bar-remote' — see it with \`git log\`)
+  upstream: $ORIGINAL_URL (added as remote 'bar-upstream' — use e.g. \`git fetch bar-upstream\`)
   Note: \`git subrepo push/pull\` on this subdir elsewhere rebuilds this worktree from mainline and discards anything not pushed from here yet." \
   "second workon call reuses the existing worktree"
 
@@ -96,18 +103,18 @@ is "$(
   git subrepo workon bar --no-shell
 )" \
   "Opened workon session for 'bar' at '.git/tmp/subrepo/bar'.
-  remote:   $UPSTREAM/bar [$DEFAULTBRANCH] (default push/pull, pinned @ $PINNED_SHORT)
-  upstream: $ORIGINAL_URL (added as remote 'upstream' — use e.g. \`git fetch upstream\`)
+  remote:   $UPSTREAM/bar [$DEFAULTBRANCH] (default push/pull, pinned @ $PINNED_SHORT, as remote 'bar-remote' — see it with \`git log\`)
+  upstream: $ORIGINAL_URL (added as remote 'bar-upstream' — use e.g. \`git fetch bar-upstream\`)
   Note: \`git subrepo push/pull\` on this subdir elsewhere rebuilds this worktree from mainline and discards anything not pushed from here yet." \
   "workon rebuilds the worktree if its directory was deleted, instead of reporting 'Resumed'"
 
 test-exists "$OWNER"/foo/.git/tmp/subrepo/bar/
 
-# Without a configured upstream, no 'upstream' remote should be added at all.
+# Without a configured upstream, no upstream remote should be added at all.
 (
   cd "$OWNER"/foo
   git subrepo clean bar
-  git remote remove upstream
+  git remote remove bar-upstream
   git config --file bar/.gitrepo --unset subrepo.upstream
 )
 
@@ -116,22 +123,22 @@ is "$(
   git subrepo workon bar --no-shell
 )" \
   "Opened workon session for 'bar' at '.git/tmp/subrepo/bar'.
-  remote:   $UPSTREAM/bar [$DEFAULTBRANCH] (default push/pull, pinned @ $PINNED_SHORT)
+  remote:   $UPSTREAM/bar [$DEFAULTBRANCH] (default push/pull, pinned @ $PINNED_SHORT, as remote 'bar-remote' — see it with \`git log\`)
   Note: \`git subrepo push/pull\` on this subdir elsewhere rebuilds this worktree from mainline and discards anything not pushed from here yet." \
-  "workon without a configured upstream adds no 'upstream' remote"
+  "workon without a configured upstream adds no upstream remote"
 
 is "$(
   cd "$OWNER"/foo
-  catch git remote get-url upstream
+  catch git remote get-url bar-upstream
 )" \
-  "error: No such remote 'upstream'" \
-  "no 'upstream' remote exists when none is configured"
+  "error: No such remote 'bar-upstream'" \
+  "no 'bar-upstream' remote exists when none is configured"
 
-# A pre-existing 'upstream' remote pointing elsewhere (unrelated to this
-# subrepo) must never be silently overwritten.
+# A pre-existing remote at the exact scoped name, pointing elsewhere
+# (unrelated to this subrepo), must never be silently overwritten.
 (
   cd "$OWNER"/foo
-  git remote add upstream https://example.com/unrelated.git
+  git remote add bar-upstream https://example.com/unrelated.git
   git subrepo config bar upstream "$ORIGINAL_URL" --force
 )
 
@@ -139,20 +146,20 @@ is "$(
   cd "$OWNER"/foo
   git subrepo workon bar --no-shell 2>&1 >/dev/null
 )" \
-  "git-subrepo: a remote named 'upstream' already exists (→ 'https://example.com/unrelated.git'); not overwriting it. Fetch/push '$ORIGINAL_URL' directly by URL instead, or rename/remove the existing 'upstream' remote first." \
-  "a conflicting pre-existing 'upstream' remote is not overwritten"
+  "git-subrepo: a remote named 'bar-upstream' already exists (→ 'https://example.com/unrelated.git'); not overwriting it. Fetch/push '$ORIGINAL_URL' directly by URL instead, or rename/remove the existing 'bar-upstream' remote first." \
+  "a conflicting pre-existing 'bar-upstream' remote is not overwritten"
 
 is "$(
   cd "$OWNER"/foo
-  git remote get-url upstream
+  git remote get-url bar-upstream
 )" \
   "https://example.com/unrelated.git" \
-  "the pre-existing unrelated 'upstream' remote is left untouched"
+  "the pre-existing unrelated 'bar-upstream' remote is left untouched"
 
 # `-F/--fetch` on a healthy, aligned remote should stay silent — no drift.
 (
   cd "$OWNER"/foo
-  git remote remove upstream
+  git remote remove bar-upstream
   git config --file bar/.gitrepo --unset subrepo.upstream
 )
 
@@ -186,9 +193,12 @@ is "$(
   "workon -F warns when remote has been rebased past the pinned commit"
 
 # `workon` should automatically fetch `upstream`'s tracked branch (populating
-# the normal `refs/remotes/upstream/<branch>` tracking ref) and tag the exact
-# commit where local history diverges from it — no manual fetch/merge-base
-# needed to see the boundary in a plain decorated `git log`.
+# a real, subrepo-scoped tracking ref) and tag the exact commit where local
+# history diverges from it — no manual fetch/merge-base needed to see the
+# boundary in a plain decorated `git log`. Both the "remote" and "upstream"
+# remotes are named per-subrepo (`<subdir>-remote`/`<subdir>-upstream`), not
+# bare "remote"/"upstream" — those are repo-global names, and a second
+# subrepo's `workon` (bar2 here) must not collide with bar's remotes above.
 #
 # Build a real three-tier fixture (original project -> a fork with one extra
 # local commit) so there's genuine shared ancestry to find, independent of
@@ -232,18 +242,18 @@ is "$(
   git subrepo workon bar2 --no-shell
 )" \
   "Opened workon session for 'bar2' at '.git/tmp/subrepo/bar2'.
-  remote:   $UPSTREAM/fork2.git [$DEFAULTBRANCH] (default push/pull, pinned @ $BAR2_PINNED_SHORT)
-  upstream: $UPSTREAM/original.git (added as remote 'upstream' — use e.g. \`git fetch upstream\`)
+  remote:   $UPSTREAM/fork2.git [$DEFAULTBRANCH] (default push/pull, pinned @ $BAR2_PINNED_SHORT, as remote 'bar2-remote' — see it with \`git log\`)
+  upstream: $UPSTREAM/original.git (added as remote 'bar2-upstream' — use e.g. \`git fetch bar2-upstream\`)
   Local work diverges from upstream at tag 'bar2-upstream-base' — see it with \`git log\`.
   Note: \`git subrepo push/pull\` on this subdir elsewhere rebuilds this worktree from mainline and discards anything not pushed from here yet." \
   "workon auto-fetches upstream and reports the divergence tag in its banner"
 
 is "$(
   cd "$OWNER"/foo/.git/tmp/subrepo/bar2
-  git rev-parse upstream/"$DEFAULTBRANCH"
+  git rev-parse bar2-upstream/"$DEFAULTBRANCH"
 )" \
   "$DIVERGE_POINT" \
-  "workon fetched 'upstream', populating the normal tracking ref at the original project's tip"
+  "workon fetched the scoped 'bar2-upstream' remote, populating its tracking ref at the original project's tip"
 
 is "$(
   cd "$OWNER"/foo/.git/tmp/subrepo/bar2
@@ -256,8 +266,17 @@ is "$(
   cd "$OWNER"/foo/.git/tmp/subrepo/bar2
   git log --color=never --decorate --pretty=format:'%d' -1 bar2-upstream-base
 )" \
-  " (tag: bar2-upstream-base, upstream/$DEFAULTBRANCH)" \
-  "the divergence tag and the upstream tracking ref both decorate the same commit in git log"
+  " (tag: bar2-upstream-base, bar2-upstream/$DEFAULTBRANCH)" \
+  "the divergence tag and the scoped upstream tracking ref both decorate the same commit in git log"
+
+# Confirm bar's own remotes above weren't disturbed by bar2's, and vice
+# versa — this is the whole point of scoping the names per-subrepo.
+is "$(
+  cd "$OWNER"/foo
+  git remote get-url bar-remote
+)" \
+  "$UPSTREAM/bar" \
+  "bar-remote is unaffected by bar2's own scoped remotes"
 
 # `config`'s write to bar2/.gitrepo above is never committed — clean the
 # tree before the next `clone`, which asserts a clean tree of its own.
@@ -290,7 +309,7 @@ is "$(
   cd "$OWNER"/foo
   git subrepo workon bar3 --no-shell >/dev/null
   cd .git/tmp/subrepo/bar3
-  git rev-parse upstream/"$DEFAULTBRANCH"
+  git rev-parse bar3-upstream/"$DEFAULTBRANCH"
 )" \
   "$DIVERGE_POINT" \
   "workon falls back to upstream's default branch when remote's tracked branch doesn't exist there"

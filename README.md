@@ -130,15 +130,29 @@ git subrepo workon <subdir> [-u <upstream-url>] [--no-shell]
 ```
 
 Opens the same kind of worktree as `branch` (at `.git/tmp/subrepo/<subdir>`,
-on branch `subrepo/<subdir>`), but wires it up with real remotes:
+on branch `subrepo/<subdir>`), but wires it up with real, named remotes so
+`git log --decorate` shows exactly where things stand — nothing is left as
+an opaque raw URL you can't see anywhere:
 
 - Plain `git push`/`git pull`/`git fetch` (no arguments) always reach
   `remote` — exactly like `git subrepo push`/`pull` already do. This never
-  changes, regardless of `upstream`.
+  changes, regardless of `upstream`. It's added as a real remote named
+  `<subdir>-remote`, so `git log` shows `(<subdir>-remote/<branch>)`
+  wherever it currently sits — e.g. right on `HEAD` if you're fully synced.
 - If `upstream` is configured (via `-u/--upstream`, or a persisted
-  `upstream` key — see below), it's *also* added as a plain named remote —
-  `git fetch upstream`, `git push upstream ...` — for explicit, deliberate
-  use. It is never the default target for a bare push/pull.
+  `upstream` key — see below), it's *also* added as a remote named
+  `<subdir>-upstream` — `git fetch <subdir>-upstream`,
+  `git push <subdir>-upstream ...` — for explicit, deliberate use. It is
+  never the default target for a bare push/pull.
+
+Remote names are scoped per-subdir (`<subdir>-remote`/`<subdir>-upstream`,
+not bare "remote"/"upstream") because remotes are repo-global: a second
+subrepo's `workon` would otherwise collide with the first — most
+concretely, a nested subrepo and its parent (e.g. `embodx` and
+`embodx/crates/potree-rs`) both need their own. If that exact scoped name
+is somehow already taken by something unrelated, `workon` leaves it alone
+and falls back to a raw URL for `remote` — still fully functional, just
+without the log decoration.
 
 Use `upstream` when `remote` is your own fork of someone else's project,
 and you occasionally want to pull in or push to the original directly, by
@@ -152,10 +166,11 @@ boundary:
 ```text
 $ git subrepo workon embodx/crates/potree-rs
 ...
+  remote:   ...(default push/pull, pinned @ 8756900, as remote 'embodx/crates/potree-rs-remote' — see it with `git log`)
   Local work diverges from upstream at tag 'embodx/crates/potree-rs-upstream-base' — see it with `git log`.
 
 $ git log --oneline --decorate
-5b4257bb (HEAD -> subrepo/..., upstream/feat/converter) test: add CLI tests   <- your latest
+5b4257bb (HEAD -> subrepo/..., embodx/crates/potree-rs-remote/feat/converter) test: add CLI tests   <- fully synced with your fork
 ...
 4da3014e (tag: embodx/crates/potree-rs-upstream-base) chore: fix other fns   <- the fork point, tagged
 e4b15601 chore: rename `new` to `load`                                       <- upstream's own history

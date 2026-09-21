@@ -8,6 +8,27 @@ use anyhow::Result;
 use colored::Colorize;
 use std::io::IsTerminal;
 
+/// Ensure a remote named `name` points at `url` — added if missing, left alone (with a
+/// warning) if it already exists pointing somewhere else, since it might belong to
+/// something unrelated. Remotes are shared repo-wide config, not per-worktree, so this
+/// never silently overwrites. Returns true if `name` is now safely usable as-is.
+fn ensure_named_remote(ctx: &Context, name: &str, url: &str) -> Result<bool> {
+    let (existing_ok, existing_url) = try_run_git(&["remote", "get-url", name], &ctx.repo_root);
+    if existing_ok && existing_url != url {
+        eprintln!(
+            "git-subrepo: a remote named '{name}' already exists (→ '{existing_url}'); not \
+             overwriting it. Fetch/push '{url}' directly by URL instead, or rename/remove the \
+             existing '{name}' remote first."
+        );
+        Ok(false)
+    } else if !existing_ok {
+        run_git(&["remote", "add", name, url], &ctx.repo_root)?;
+        Ok(true)
+    } else {
+        Ok(true)
+    }
+}
+
 /// Ask `url` (via `ls-remote`, no local fetch) what its default branch is, for when
 /// `remote`'s tracked branch doesn't exist there (e.g. a feature branch created only
 /// after forking). Read-only; returns `None` on any failure.
@@ -73,13 +94,15 @@ fn check_drift(
 ///     explicit, deliberate use (`git fetch upstream`, `git push upstream ...`) —
 ///     never the default target for bare push/pull.
 ///
-/// For the default (bare) push/pull we avoid `git remote add`: remotes live in the
-/// shared repo config, not per-worktree, so adding one (e.g. named "origin") would
-/// also mutate the main repo's config and could collide with an existing remote of
-/// the same name. Instead we set `branch.<name>.remote`/`.merge` (git accepts a URL
-/// there, not just a remote name), scoped to the unique `subrepo/<subdir>` branch
-/// name — so it can't collide with anything. The `upstream` remote (added only when
-/// configured) is a deliberate exception: it's meant to be invoked by name.
+/// Both `remote` and `upstream` are added as real named remotes (named literally
+/// "remote"/"upstream", matching `.gitrepo`'s own field names) so plain `git log
+/// --decorate` shows real, live tracking refs — never left as an opaque raw URL you
+/// can't see anywhere. We never blindly `git remote add`, though: remotes are shared
+/// repo-wide config, not per-worktree, so a name already taken by something unrelated
+/// (most plausibly "remote" colliding with a real remote of that literal name, or
+/// occasionally "upstream") is left untouched with a warning, falling back to a raw
+/// URL in `branch.<name>.remote` for `remote` specifically (still fully functional,
+/// just without the log decoration).
 #[allow(clippy::too_many_arguments)]
 pub fn run(
     subdir: String,
@@ -140,14 +163,26 @@ pub fn run(
         )?;
     }
 
-    // Wire up branch-scoped remote config (see module doc for why not `git remote add`
-    // for this part). branch.<name>.remote/.merge drive bare `git pull`/`fetch`/`push` —
-    // always `remote`, matching `git subrepo push`/`pull`.
+    // Wire up branch-scoped remote config. branch.<name>.remote/.merge drive bare
+    // `git pull`/`fetch`/`push` — always `remote`, matching `git subrepo push`/`pull`.
+    // Prefer a real named remote (scoped per-subrepo — `{subref}-remote`, not a bare
+    // "remote" — since remote names are repo-global: a second subrepo's `workon`
+    // would otherwise collide with the first, e.g. a nested `foo` and `foo/bar` both
+    // wanting their own "remote"). Falls back to a raw URL if that exact scoped name
+    // is somehow already taken by something unrelated — still fully functional, just
+    // invisible to `git log --decorate`; see module doc.
+    let remote_name = format!("{subref}-remote");
+    let remote_ready = ensure_named_remote(&ctx, &remote_name, &cfg.remote)?;
+    let branch_remote_value: &str = if remote_ready {
+        &remote_name
+    } else {
+        &cfg.remote
+    };
     run_git(
         &[
             "config",
             &format!("branch.{branch_name}.remote"),
-            &cfg.remote,
+            branch_remote_value,
         ],
         &ctx.repo_root,
     )?;
@@ -168,36 +203,31 @@ pub fn run(
         ],
         &ctx.repo_root,
     );
+    if remote_ready {
+        // Best-effort: populates refs/remotes/<remote_name>/<branch> so a plain
+        // decorated `git log` shows exactly where `remote` currently sits relative to
+        // HEAD.
+        try_run_git(
+            &["fetch", "--no-tags", "--quiet", &remote_name, &cfg.branch],
+            &ctx.repo_root,
+        );
+    }
 
     // If configured, also expose `upstream` as a plain named remote for explicit,
-    // deliberate use (never the default target). Remotes are shared repo-wide config,
-    // not per-worktree, so only ever add — never overwrite an existing "upstream"
-    // remote that points somewhere else; it might belong to something unrelated.
+    // deliberate use (never the default target). Scoped per-subrepo for the same
+    // reason as `remote_name` above: `{subref}-upstream`, not a bare "upstream".
     let mut divergence_marker: Option<String> = None;
     if let Some(url) = &upstream_url {
-        let (existing_ok, existing_url) =
-            try_run_git(&["remote", "get-url", "upstream"], &ctx.repo_root);
-        let upstream_ready = if existing_ok && &existing_url != url {
-            eprintln!(
-                "git-subrepo: a remote named 'upstream' already exists (→ '{existing_url}'); \
-                 not overwriting it. Fetch/push '{url}' directly by URL instead, or rename/remove \
-                 the existing 'upstream' remote first."
-            );
-            false
-        } else if !existing_ok {
-            run_git(&["remote", "add", "upstream", url], &ctx.repo_root)?;
-            true
-        } else {
-            true
-        };
+        let upstream_name = format!("{subref}-upstream");
+        let upstream_ready = ensure_named_remote(&ctx, &upstream_name, url)?;
 
         // Best-effort: fetch upstream's tracked branch — this populates the normal
-        // `refs/remotes/upstream/<branch>` tracking ref for free, so plain `git log`
-        // (with --decorate, e.g. a `git lg` alias) shows `(upstream/<branch>)` right
-        // where it currently sits — then drop a permanent tag at the exact commit
-        // where local history diverges from it, so that boundary stays visible even
-        // after upstream moves further. Never fatal: offline, wrong branch name, etc.
-        // just means no marker this time, not a broken `workon`.
+        // `refs/remotes/<upstream_name>/<branch>` tracking ref for free, so plain
+        // `git log` (with --decorate, e.g. a `git lg` alias) shows it right where it
+        // currently sits — then drop a permanent tag at the exact commit where local
+        // history diverges from it, so that boundary stays visible even after
+        // upstream moves further. Never fatal: offline, wrong branch name, etc. just
+        // means no marker this time, not a broken `workon`.
         if upstream_ready {
             // `remote`'s tracked branch (e.g. a feature branch created after forking)
             // often simply doesn't exist on `upstream` — fall back to upstream's own
@@ -208,7 +238,7 @@ pub fn run(
                     "fetch",
                     "--no-tags",
                     "--quiet",
-                    "upstream",
+                    &upstream_name,
                     &upstream_branch,
                 ],
                 &ctx.repo_root,
@@ -216,7 +246,13 @@ pub fn run(
             .0;
             if !fetch_ok && let Some(default_branch) = upstream_default_branch(&ctx, url) {
                 fetch_ok = try_run_git(
-                    &["fetch", "--no-tags", "--quiet", "upstream", &default_branch],
+                    &[
+                        "fetch",
+                        "--no-tags",
+                        "--quiet",
+                        &upstream_name,
+                        &default_branch,
+                    ],
                     &ctx.repo_root,
                 )
                 .0;
@@ -225,7 +261,8 @@ pub fn run(
                 }
             }
             if fetch_ok {
-                let upstream_tracking_ref = format!("refs/remotes/upstream/{upstream_branch}");
+                let upstream_tracking_ref =
+                    format!("refs/remotes/{upstream_name}/{upstream_branch}");
                 if let Some(upstream_tip) = rev_parse(&upstream_tracking_ref, &ctx.repo_root) {
                     let (base_ok, base) =
                         try_run_git(&["merge-base", &branch_name, &upstream_tip], &ctx.repo_root);
@@ -294,13 +331,19 @@ pub fn run(
         } else {
             format!(", pinned @ {}", cfg.commit.get(..7).unwrap_or(&cfg.commit))
         };
+        let remote_note = if remote_ready {
+            format!(", as remote '{}' — see it with `git log`", remote_name)
+        } else {
+            String::new()
+        };
         println!(
-            "  remote:   {} [{}] (default push/pull{pin_note})",
+            "  remote:   {} [{}] (default push/pull{pin_note}{remote_note})",
             cfg.remote, cfg.branch
         );
         if let Some(url) = &upstream_url {
+            let upstream_name = format!("{subref}-upstream");
             println!(
-                "  upstream: {url} (added as remote 'upstream' — use e.g. `git fetch upstream`)"
+                "  upstream: {url} (added as remote '{upstream_name}' — use e.g. `git fetch {upstream_name}`)"
             );
             if let Some(marker) = &divergence_marker {
                 println!(
