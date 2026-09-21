@@ -157,17 +157,50 @@ pub fn run(
     // deliberate use (never the default target). Remotes are shared repo-wide config,
     // not per-worktree, so only ever add — never overwrite an existing "upstream"
     // remote that points somewhere else; it might belong to something unrelated.
+    let mut divergence_marker: Option<String> = None;
     if let Some(url) = &upstream_url {
         let (existing_ok, existing_url) =
             try_run_git(&["remote", "get-url", "upstream"], &ctx.repo_root);
-        if existing_ok && &existing_url != url {
+        let upstream_ready = if existing_ok && &existing_url != url {
             eprintln!(
                 "git-subrepo: a remote named 'upstream' already exists (→ '{existing_url}'); \
                  not overwriting it. Fetch/push '{url}' directly by URL instead, or rename/remove \
                  the existing 'upstream' remote first."
             );
+            false
         } else if !existing_ok {
             run_git(&["remote", "add", "upstream", url], &ctx.repo_root)?;
+            true
+        } else {
+            true
+        };
+
+        // Best-effort: fetch upstream's tracked branch — this populates the normal
+        // `refs/remotes/upstream/<branch>` tracking ref for free, so plain `git log`
+        // (with --decorate, e.g. a `git lg` alias) shows `(upstream/<branch>)` right
+        // where it currently sits — then drop a permanent tag at the exact commit
+        // where local history diverges from it, so that boundary stays visible even
+        // after upstream moves further. Never fatal: offline, wrong branch name, etc.
+        // just means no marker this time, not a broken `workon`.
+        if upstream_ready {
+            let (fetch_ok, _) = try_run_git(
+                &["fetch", "--no-tags", "--quiet", "upstream", &cfg.branch],
+                &ctx.repo_root,
+            );
+            if fetch_ok {
+                let upstream_tracking_ref = format!("refs/remotes/upstream/{}", cfg.branch);
+                if let Some(upstream_tip) = rev_parse(&upstream_tracking_ref, &ctx.repo_root) {
+                    let (base_ok, base) =
+                        try_run_git(&["merge-base", &branch_name, &upstream_tip], &ctx.repo_root);
+                    let base = base.trim();
+                    if base_ok && !base.is_empty() {
+                        let marker = format!("{subref}-upstream-base");
+                        if run_git(&["tag", "-f", &marker, base], &ctx.repo_root).is_ok() {
+                            divergence_marker = Some(marker);
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -232,6 +265,12 @@ pub fn run(
             println!(
                 "  upstream: {url} (added as remote 'upstream' — use e.g. `git fetch upstream`)"
             );
+            if let Some(marker) = &divergence_marker {
+                println!(
+                    "  Local work diverges from upstream at tag '{}' — see it with `git log`.",
+                    marker.cyan()
+                );
+            }
         }
         println!(
             "  {}",

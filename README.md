@@ -144,6 +144,25 @@ Use `upstream` when `remote` is your own fork of someone else's project,
 and you occasionally want to pull in or push to the original directly, by
 name, without disturbing the default `remote` target.
 
+Whenever `upstream` is configured, `workon` also fetches its tracked branch
+automatically and tags the exact commit where your local history diverges
+from it — no manual `git fetch`/`git merge-base` needed to see the
+boundary:
+
+```text
+$ git subrepo workon embodx/crates/potree-rs
+...
+  Local work diverges from upstream at tag 'embodx/crates/potree-rs-upstream-base' — see it with `git log`.
+
+$ git log --oneline --decorate
+5b4257bb (HEAD -> subrepo/..., upstream/feat/converter) test: add CLI tests   <- your latest
+...
+4da3014e (tag: embodx/crates/potree-rs-upstream-base) chore: fix other fns   <- the fork point, tagged
+e4b15601 chore: rename `new` to `load`                                       <- upstream's own history
+```
+The tag stays put even if the real `upstream` remote moves further later;
+re-running `workon` refreshes both the tracking ref and the tag together.
+
 On a terminal, `workon` drops you into a subshell with its working directory
 set to the worktree; exit the shell to return. In scripts/CI (non-TTY), or
 with `--no-shell`, it just prints the path.

@@ -185,6 +185,80 @@ is "$(
   Recommended: run \`git subrepo pull bar\` first to re-sync." \
   "workon -F warns when remote has been rebased past the pinned commit"
 
+# `workon` should automatically fetch `upstream`'s tracked branch (populating
+# the normal `refs/remotes/upstream/<branch>` tracking ref) and tag the exact
+# commit where local history diverges from it — no manual fetch/merge-base
+# needed to see the boundary in a plain decorated `git log`.
+#
+# Build a real three-tier fixture (original project -> a fork with one extra
+# local commit) so there's genuine shared ancestry to find, independent of
+# `bar`'s now-rewritten state above.
+(
+  mkdir -p "$UPSTREAM"/original-src
+  cd "$UPSTREAM"/original-src
+  git init -q -b "$DEFAULTBRANCH"
+  git config user.name "Original Author"
+  git config user.email orig@example.com
+  echo "v1" >lib.rs
+  git add lib.rs
+  git commit -qm "original: initial version"
+  echo "v2" >>lib.rs
+  git add lib.rs
+  git commit -qm "original: add feature"
+  git init -q --bare -b "$DEFAULTBRANCH" "$UPSTREAM"/original.git
+  git push -q "$UPSTREAM"/original.git HEAD:"$DEFAULTBRANCH"
+
+  git clone -q "$UPSTREAM"/original.git "$UPSTREAM"/fork2-src
+  cd "$UPSTREAM"/fork2-src
+  git config user.name "Me"
+  git config user.email me@example.com
+  echo "v3-mine" >>lib.rs
+  git add lib.rs
+  git commit -qm "me: local change"
+  git init -q --bare -b "$DEFAULTBRANCH" "$UPSTREAM"/fork2.git
+  git push -q "$UPSTREAM"/fork2.git HEAD:"$DEFAULTBRANCH"
+)
+DIVERGE_POINT=$(cd "$UPSTREAM"/original-src && git rev-parse HEAD)
+
+(
+  cd "$OWNER"/foo
+  git subrepo clone "$UPSTREAM"/fork2.git bar2 -b "$DEFAULTBRANCH" >/dev/null
+  git subrepo config bar2 upstream "$UPSTREAM"/original.git --force >/dev/null
+)
+BAR2_PINNED_SHORT=$(cd "$OWNER"/foo && git config -f bar2/.gitrepo subrepo.commit | cut -c1-7)
+
+is "$(
+  cd "$OWNER"/foo
+  git subrepo workon bar2 --no-shell
+)" \
+  "Opened workon session for 'bar2' at '.git/tmp/subrepo/bar2'.
+  remote:   $UPSTREAM/fork2.git [$DEFAULTBRANCH] (default push/pull, pinned @ $BAR2_PINNED_SHORT)
+  upstream: $UPSTREAM/original.git (added as remote 'upstream' — use e.g. \`git fetch upstream\`)
+  Local work diverges from upstream at tag 'bar2-upstream-base' — see it with \`git log\`.
+  Note: \`git subrepo push/pull\` on this subdir elsewhere rebuilds this worktree from mainline and discards anything not pushed from here yet." \
+  "workon auto-fetches upstream and reports the divergence tag in its banner"
+
+is "$(
+  cd "$OWNER"/foo/.git/tmp/subrepo/bar2
+  git rev-parse upstream/"$DEFAULTBRANCH"
+)" \
+  "$DIVERGE_POINT" \
+  "workon fetched 'upstream', populating the normal tracking ref at the original project's tip"
+
+is "$(
+  cd "$OWNER"/foo/.git/tmp/subrepo/bar2
+  git rev-parse bar2-upstream-base
+)" \
+  "$DIVERGE_POINT" \
+  "workon auto-tagged the exact commit where local history diverges from upstream"
+
+is "$(
+  cd "$OWNER"/foo/.git/tmp/subrepo/bar2
+  git log --color=never --decorate --pretty=format:'%d' -1 bar2-upstream-base
+)" \
+  " (tag: bar2-upstream-base, upstream/$DEFAULTBRANCH)" \
+  "the divergence tag and the upstream tracking ref both decorate the same commit in git log"
+
 done_testing
 
 teardown
