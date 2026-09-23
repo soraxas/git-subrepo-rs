@@ -10,7 +10,7 @@ pub fn run(subdir: String, key: String, value: Option<String>, force: bool) -> R
     let gitrepo_path_str = gitrepo_path.to_string_lossy().into_owned();
 
     let valid_keys = [
-        "branch", "cmdver", "commit", "method", "remote", "upstream", "version",
+        "branch", "cmdver", "commit", "method", "parent", "remote", "upstream", "version",
     ];
     if !valid_keys.contains(&key.as_str()) {
         anyhow::bail!("Option {key} not recognized");
