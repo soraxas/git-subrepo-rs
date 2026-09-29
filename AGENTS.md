@@ -15,7 +15,11 @@ Full compatibility with the original git-subrepo `.gitrepo` state file format is
 ```text
 src/
 ├── main.rs           — Entry point: parse CLI, build tokio runtime, dispatch
-├── cli.rs            — clap derive-based CLI definitions
+├── cli.rs            — Usage CLI definitions and compatibility error handling
+├── cli/
+│   ├── args.rs       — Per-command arguments and completion declarations
+│   ├── compat.rs     — Argument compatibility checks for Usage
+│   └── completion.rs — Local, read-only dynamic completion callbacks
 ├── error.rs          — SubrepoError (thiserror) + SubrepoResult
 ├── context.rs        — SubrepoContext struct (repo, subdir, options)
 ├── gitrepo.rs        — .gitrepo file reading / writing (via git2::Config)
@@ -43,7 +47,7 @@ src/
 
 | Purpose | Crate |
 |---------|-------|
-| CLI parsing | `clap` (derive) |
+| CLI parsing and shell completions | `usage-rs` (derive, completions) |
 | Git operations | `git2` (libgit2 bindings) |
 | Async runtime | `tokio` (full features) |
 | Progress bars | `indicatif` |

@@ -33,7 +33,28 @@ cargo install --path .
 cargo build --release && cp target/release/git-subrepo ~/.local/bin/
 ```
 
-Requires: `git` ≥ 2.23, Rust ≥ 1.75.
+Requires: `git` ≥ 2.23, Rust ≥ 1.91.
+
+For Fish tab completion, run this after installing the binary:
+
+```fish
+mkdir -p ~/.config/fish/completions
+git subrepo completion fish > ~/.config/fish/completions/git-subrepo.fish
+```
+
+Restart Fish after installation. Completions support both `git subrepo` and
+`git-subrepo`, including command options, tracked subrepo paths, and config keys.
+Suggestions are generated from the Usage CLI definitions in Rust. Subrepo paths
+come from the local Git index; completion never fetches or changes the repository.
+The installed script calls the binary, so suggestions stay current after upgrades.
+No separate Usage CLI installation is needed.
+
+`git subrepo completion <shell>` also supports `bash`, `zsh`, `elvish`, `nushell`,
+and `powershell`. To regenerate the bundled Fish script during development:
+
+```bash
+cargo run -- completion fish > etc/git-subrepo.fish
+```
 
 ## Quick start
 

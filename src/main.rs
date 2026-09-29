@@ -5,7 +5,6 @@ mod error;
 mod git_utils;
 mod gitrepo;
 
-use clap::Parser;
 use cli::{Cli, Commands};
 use colored::Colorize;
 
@@ -73,6 +72,11 @@ fn print_no_command_help() {
         ("config", "<subdir> <key>", "Get/set subrepo config"),
         ("sync", "", "Sync subrepos sharing the same remote"),
         ("fix", "", "Scan for issues and offer to fix them"),
+        (
+            "completion",
+            "<shell>",
+            "Generate a shell completion script",
+        ),
     ];
     for (name, args, desc) in &cmds {
         println!("  {:<8} {:<26}  {}", name.green().bold(), args, desc);
@@ -193,111 +197,7 @@ async fn run_all_parallel(
 
 #[tokio::main]
 async fn main() {
-    // Use try_parse to format errors ourselves
-    let cli = match Cli::try_parse() {
-        Ok(c) => c,
-        Err(e) => {
-            use clap::error::ErrorKind;
-            let msg = match e.kind() {
-                ErrorKind::InvalidSubcommand => {
-                    let rendered = e.render().to_string();
-                    // Extract the single-quoted subcommand name from the rendered error
-                    // e.g. "error: unrecognized subcommand 'main'"
-                    if let Some(start) = rendered.find('\'') {
-                        let after = &rendered[start + 1..];
-                        if let Some(end) = after.find('\'') {
-                            let subcmd = &after[..end];
-                            format!("'{}' is not a command. See 'git subrepo help'.", subcmd)
-                        } else {
-                            rendered
-                                .lines()
-                                .next()
-                                .unwrap_or("")
-                                .trim()
-                                .trim_start_matches("error: ")
-                                .to_string()
-                        }
-                    } else {
-                        rendered
-                            .lines()
-                            .next()
-                            .unwrap_or("")
-                            .trim()
-                            .trim_start_matches("error: ")
-                            .to_string()
-                    }
-                }
-                ErrorKind::UnknownArgument => {
-                    let rendered = e.render().to_string();
-                    // Transform "unexpected argument '--foo' found" → "error: unknown option `foo'"
-                    if let Some(start) = rendered.find("'--") {
-                        let after = &rendered[start + 3..];
-                        if let Some(end) = after.find('\'') {
-                            let option_name = &after[..end];
-                            format!("error: unknown option `{}'", option_name)
-                        } else {
-                            rendered
-                                .lines()
-                                .next()
-                                .unwrap_or("")
-                                .trim()
-                                .trim_start_matches("error: ")
-                                .to_string()
-                        }
-                    } else {
-                        rendered
-                            .lines()
-                            .next()
-                            .unwrap_or("")
-                            .trim()
-                            .trim_start_matches("error: ")
-                            .to_string()
-                    }
-                }
-                ErrorKind::MissingRequiredArgument => {
-                    let rendered = e.render().to_string();
-                    // Only look at the "were not provided" list, not the full rendered
-                    // error — the trailing "Usage: ..." line always shows every
-                    // positional for the command regardless of which one is actually
-                    // missing, so matching against the whole string produces false
-                    // positives (e.g. `config <subdir>` with no <key> would otherwise
-                    // be misreported as missing <subdir>, which was provided).
-                    let missing = rendered.split("Usage:").next().unwrap_or(&rendered);
-
-                    if missing.contains("<SUBDIR>") {
-                        // Find which subcommand was invoked via env args
-                        let known_cmds = [
-                            "clone", "init", "pull", "push", "fetch", "branch", "commit", "workon",
-                            "status", "clean", "config", "sync", "fix",
-                        ];
-                        let cmd = std::env::args()
-                            .find(|a| known_cmds.contains(&a.as_str()))
-                            .unwrap_or_default();
-                        format!("Command '{}' requires arg 'subdir'.", cmd)
-                    } else if missing.contains("<KEY>") {
-                        "Command 'config' requires arg 'key'.".to_string()
-                    } else if missing.contains("<REMOTE>")
-                        && std::env::args()
-                            .any(|a| a == "--all" || a == "-a" || a == "--ALL" || a == "-A")
-                    {
-                        // clone --all
-                        "Invalid option '--all' for 'clone'.".to_string()
-                    } else {
-                        rendered
-                            .lines()
-                            .next()
-                            .unwrap_or("")
-                            .trim()
-                            .trim_start_matches("error: ")
-                            .to_string()
-                    }
-                }
-                _ => e.render().to_string(),
-            };
-            eprintln!("git-subrepo: {msg}");
-            std::process::exit(1);
-        }
-    };
+    let cli = Cli::parse_process();
 
     if cli.version {
         println!("{}", env!("CARGO_PKG_VERSION"));
@@ -319,7 +219,13 @@ async fn main() {
                 print_no_command_help();
                 std::process::exit(0);
             }
-            Some(Commands::Clone {
+            Some(Commands::Completion(cli::CompletionArgs { shell })) => {
+                let shell =
+                    usage::complete::Shell::from_name(&shell).expect("shell validated by the CLI");
+                print!("{}", Cli::completion_script(shell));
+                Ok(())
+            }
+            Some(Commands::Clone(cli::CloneArgs {
                 remote,
                 subdir,
                 branch,
@@ -327,7 +233,7 @@ async fn main() {
                 message,
                 stage_only,
                 extra,
-            }) => {
+            })) => {
                 if all || all_all {
                     anyhow::bail!("Invalid option '--all' for 'clone'.");
                 }
@@ -342,13 +248,13 @@ async fn main() {
                     verify,
                 )
             }
-            Some(Commands::Init {
+            Some(Commands::Init(cli::InitArgs {
                 subdir,
                 remote,
                 branch,
                 method,
-            }) => commands::init::run(subdir, remote, branch, method),
-            Some(Commands::Pull {
+            })) => commands::init::run(subdir, remote, branch, method),
+            Some(Commands::Pull(cli::PullArgs {
                 subdir,
                 branch,
                 remote,
@@ -356,7 +262,7 @@ async fn main() {
                 update,
                 message,
                 stage_only,
-            }) => {
+            })) => {
                 if !all && !all_all && update && branch.is_none() && remote.is_none() {
                     anyhow::bail!("Can't use '--update' without '--branch' or '--remote'.");
                 }
@@ -564,7 +470,7 @@ async fn main() {
                     )
                 }
             }
-            Some(Commands::Push {
+            Some(Commands::Push(cli::PushArgs {
                 subdir,
                 branch,
                 remote,
@@ -573,7 +479,7 @@ async fn main() {
 
                 update: _,
                 message,
-            }) => {
+            })) => {
                 if all || all_all {
                     let subrepos = get_all_subrepos(all_all)?;
                     let total = subrepos.len();
@@ -610,11 +516,11 @@ async fn main() {
                     )
                 }
             }
-            Some(Commands::Fetch {
+            Some(Commands::Fetch(cli::FetchArgs {
                 subdir,
                 branch,
                 remote,
-            }) => {
+            })) => {
                 if all || all_all {
                     let subrepos = get_all_subrepos(all_all)?;
                     // Single clean check before spawning parallel tasks.
@@ -644,7 +550,7 @@ async fn main() {
                     commands::fetch::run(subdir, branch, remote, quiet).map(|_| ())
                 }
             }
-            Some(Commands::Branch { subdir }) => {
+            Some(Commands::Branch(cli::BranchArgs { subdir })) => {
                 if all || all_all {
                     let subrepos = get_all_subrepos(all_all)?;
                     let total = subrepos.len();
@@ -672,11 +578,11 @@ async fn main() {
                     commands::branch_cmd::run(subdir, force, fetch, quiet)
                 }
             }
-            Some(Commands::Commit {
+            Some(Commands::Commit(cli::CommitArgs {
                 subdir,
                 subrepo_commit_ref,
                 message,
-            }) => commands::commit_cmd::run(
+            })) => commands::commit_cmd::run(
                 subdir,
                 subrepo_commit_ref,
                 force,
@@ -685,20 +591,20 @@ async fn main() {
                 message,
                 verify,
             ),
-            Some(Commands::Workon {
+            Some(Commands::Workon(cli::WorkonArgs {
                 subdir,
                 upstream,
                 no_shell,
-            }) => commands::workon::run(subdir, upstream, force, fetch, quiet, no_shell),
-            Some(Commands::Status {
+            })) => commands::workon::run(subdir, upstream, force, fetch, quiet, no_shell),
+            Some(Commands::Status(cli::StatusArgs {
                 subdir,
                 no_dirty,
                 no_fetch,
-            }) => {
+            })) => {
                 // dirty is ON by default; fetch is ON by default (--no-dirty / --no-fetch disable them)
                 commands::status::run(subdir, quiet, verbose, !no_fetch, all, all_all, !no_dirty)
             }
-            Some(Commands::Clean { subdir }) => {
+            Some(Commands::Clean(cli::CleanArgs { subdir })) => {
                 if (all || all_all) && subdir.is_none() {
                     let subrepos = get_all_subrepos(all_all)?;
                     let total = subrepos.len();
@@ -714,7 +620,7 @@ async fn main() {
                     commands::clean::run(subdir, force, quiet)
                 }
             }
-            Some(Commands::Config { subdir, key, value }) => {
+            Some(Commands::Config(cli::ConfigArgs { subdir, key, value })) => {
                 commands::config::run(subdir, key, value, force)
             }
             Some(Commands::Sync) => commands::sync::run(no_edit, verify, quiet),

@@ -2,6 +2,10 @@ use crate::commands::{Context, normalize_subdir};
 use crate::git_utils::{run_git, try_run_git};
 use anyhow::Result;
 
+pub const VALID_KEYS: &[&str] = &[
+    "branch", "cmdver", "commit", "method", "parent", "remote", "upstream", "version",
+];
+
 pub fn run(subdir: String, key: String, value: Option<String>, force: bool) -> Result<()> {
     let ctx = Context::new()?;
 
@@ -9,10 +13,7 @@ pub fn run(subdir: String, key: String, value: Option<String>, force: bool) -> R
     let gitrepo_path = ctx.repo_root.join(&subdir).join(".gitrepo");
     let gitrepo_path_str = gitrepo_path.to_string_lossy().into_owned();
 
-    let valid_keys = [
-        "branch", "cmdver", "commit", "method", "parent", "remote", "upstream", "version",
-    ];
-    if !valid_keys.contains(&key.as_str()) {
+    if !VALID_KEYS.contains(&key.as_str()) {
         anyhow::bail!("Option {key} not recognized");
     }
 

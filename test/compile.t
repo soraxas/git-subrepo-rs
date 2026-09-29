@@ -11,9 +11,9 @@ use Test::More
   git subrepo --version &>/dev/null
   pass 'git-subrepo binary is present and runs'
 
-  # Check --help works
-  git subrepo --help &>/dev/null
-  pass 'git-subrepo --help succeeds'
+  # Git intercepts `git subrepo --help` to open a man page; -h reaches the CLI.
+  git subrepo -h &>/dev/null
+  pass 'git-subrepo -h succeeds'
 }
 
 done_testing 2
