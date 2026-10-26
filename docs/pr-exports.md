@@ -36,13 +36,21 @@ real local Git fixtures, and no network. The application has no new dependencies
 
 ## Prepare
 
-Run from the owning checkout root with committed changes in the subrepo:
+Run from the owning checkout with committed changes in the subrepo. This example
+uses a path from the checkout root:
 
 ```bash
 git subrepo pr prepare lib/mylib \
   --branch contribute/robot-viewer \
   --message 'feat: add standalone robot viewer'
 ```
+
+Inside `lib/mylib` or its descendants, omit the subrepo path to infer it, or pass
+a cwd-relative path such as `.` from the subrepo root. Interactive writes show
+the discovered checkout and target before asking to execute there; `--yes` skips
+that location question. It does not skip the guided publication confirmation.
+`--path` selections always remain relative to the selected subrepo root. See
+[directory and fallback rules](../README.md#running-from-a-subdirectory).
 
 The command prints a standalone repository path. It snapshots the committed
 subtree, excludes its root `.gitrepo`, and creates one public commit based on

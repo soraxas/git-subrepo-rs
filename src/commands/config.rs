@@ -16,6 +16,9 @@ pub fn run(subdir: String, key: String, value: Option<String>, force: bool) -> R
     if !VALID_KEYS.contains(&key.as_str()) {
         anyhow::bail!("Option {key} not recognized");
     }
+    if !gitrepo_path.is_file() {
+        anyhow::bail!("Not a subrepo: {subdir} (no .gitrepo file)");
+    }
 
     let config_key = format!("subrepo.{key}");
 

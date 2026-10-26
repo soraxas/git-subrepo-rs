@@ -207,7 +207,7 @@ async fn run_all_parallel(
 
 #[tokio::main]
 async fn main() {
-    let cli = Cli::parse_process();
+    let mut cli = Cli::parse_process();
 
     if cli.version {
         println!("{}", env!("CARGO_PKG_VERSION"));
@@ -224,6 +224,9 @@ async fn main() {
     let verify = cli.verify;
 
     let result: anyhow::Result<()> = async {
+        if !commands::invocation::prepare(&mut cli)? {
+            return Ok(());
+        }
         match cli.command {
             None => {
                 print_no_command_help();

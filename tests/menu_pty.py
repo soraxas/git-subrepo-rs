@@ -249,6 +249,46 @@ class GuidedMenu(unittest.TestCase):
         self.assertIn("git subrepo pr --help", output)
         self.assertNotIn("Select action", output)
 
+    def test_nested_config_write_defaults_to_no_without_changing_metadata(self):
+        cwd = self.owner / "lib/unit"
+        before = (cwd / ".gitrepo").read_bytes()
+        terminal = self.terminal(cwd, args=("config", ".", "exclude", "LOCAL_PATCHES.md"))
+        terminal.expect("Checkout:")
+        terminal.expect("Target: lib/unit")
+        terminal.expect("Execute in this checkout?")
+        terminal.send("\n")
+        self.assertEqual(terminal.wait(), 0)
+        self.assertEqual((cwd / ".gitrepo").read_bytes(), before)
+
+    def test_nested_config_accepts_confirmed_root_relative_fallback(self):
+        cwd = self.owner / "lib/unit"
+        terminal = self.terminal(cwd, args=("config", "lib/unit", "exclude", "LOCAL_PATCHES.md"))
+        terminal.expect("checkout-root-relative")
+        terminal.expect("Execute in this checkout?")
+        terminal.send("y")
+        self.assertEqual(terminal.wait(), 0)
+        self.assertEqual(self.git(self.owner, "config", "--file", "lib/unit/.gitrepo", "subrepo.exclude"), "LOCAL_PATCHES.md")
+
+    def test_nested_config_read_does_not_prompt(self):
+        terminal = self.terminal(self.owner / "lib/unit", args=("config", ".", "method"))
+        terminal.expect("option 'method'")
+        self.assertEqual(terminal.wait(), 0)
+        self.assertNotIn("Execute in this checkout?", terminal.output)
+
+    def test_yes_only_skips_nested_execution_prompt(self):
+        terminal = self.terminal(self.owner / "lib/unit", args=("config", ".", "exclude", "local", "--yes"))
+        terminal.expect("option 'exclude'")
+        self.assertEqual(terminal.wait(), 0)
+        self.assertNotIn("Execute in this checkout?", terminal.output)
+
+    def test_quiet_nested_confirmation_still_displays_target(self):
+        terminal = self.terminal(self.owner / "lib/unit", args=("-q", "config", ".", "exclude", "local"))
+        terminal.expect("Checkout:")
+        terminal.expect("Target: lib/unit")
+        terminal.expect("Execute in this checkout?")
+        terminal.send("\n")
+        self.assertEqual(terminal.wait(), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

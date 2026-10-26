@@ -569,10 +569,7 @@ fn stage_subrepo_content(
     // changes here is `.gitrepo` having just been rewritten by rebase-parent
     // auto-repair a few steps earlier in this same run — which `read-tree` below
     // immediately supersedes anyway.
-    let (_, ls_out) = try_run_git(&["ls-files", "--", subdir], &ctx.repo_root);
-    if !ls_out.trim().is_empty() {
-        run_git(&["rm", "-r", "-f", "--", subdir], &ctx.repo_root)?;
-    }
+    super::remove_subdir_content(ctx, subdir, &import_tree, true)?;
 
     // Read in the subrepo content
     let prefix = format!("{subdir}/");

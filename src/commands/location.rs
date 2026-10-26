@@ -64,7 +64,8 @@ pub(super) fn tracked_subrepos(root: &Path) -> Result<Vec<String>> {
     .collect())
 }
 
-fn nearest_subrepo<'a>(relative: &Path, subrepos: &'a [String]) -> Option<&'a str> {
+/// Select the deepest tracked subrepo containing a checkout-relative directory.
+pub(super) fn nearest_subrepo<'a>(relative: &Path, subrepos: &'a [String]) -> Option<&'a str> {
     subrepos
         .iter()
         .filter(|subdir| relative.starts_with(subdir))
@@ -151,7 +152,7 @@ pub(super) fn resolve_commit(cwd: &Path, explicit: Option<&str>) -> Result<Commi
     }
 
     let subdir = match explicit {
-        Some(subdir) => normalize_subdir(subdir),
+        Some(subdir) => super::invocation::resolve_path(&root, cwd, subdir, true)?.path,
         None => {
             let cwd = cwd.canonicalize()?;
             let relative = cwd.strip_prefix(&root)?;

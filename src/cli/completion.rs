@@ -50,6 +50,15 @@ fn subrepo_paths(files: &[u8]) -> Vec<String> {
 }
 
 pub(super) fn subrepos<T>(_: &T, _: &CompleteCtx<'_>) -> Vec<Candidate<'static>> {
+    let prefix = git_output(&["rev-parse", "--show-prefix"]);
+    let Ok(prefix) = std::str::from_utf8(&prefix) else {
+        return Vec::new();
+    };
+    let cwd: Vec<_> = prefix
+        .trim_end_matches('\n')
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect();
     subrepo_paths(&git_output(&[
         "ls-files",
         "--full-name",
@@ -58,7 +67,22 @@ pub(super) fn subrepos<T>(_: &T, _: &CompleteCtx<'_>) -> Vec<Candidate<'static>>
         ":(top,glob)**/.gitrepo",
     ]))
     .into_iter()
-    .map(|path| Candidate::described(path, "Subrepo"))
+    .map(|path| {
+        let target: Vec<_> = path.split('/').collect();
+        let common = cwd
+            .iter()
+            .zip(&target)
+            .take_while(|(left, right)| left == right)
+            .count();
+        let mut relative = vec![".."; cwd.len() - common];
+        relative.extend_from_slice(&target[common..]);
+        let relative = if relative.is_empty() {
+            ".".to_owned()
+        } else {
+            relative.join("/")
+        };
+        Candidate::described(relative, "Subrepo")
+    })
     .collect()
 }
 

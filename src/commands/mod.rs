@@ -6,6 +6,7 @@ pub mod config;
 pub mod fetch;
 pub mod fix;
 pub mod init;
+pub mod invocation;
 mod location;
 pub mod pr;
 pub mod pull;
@@ -46,12 +47,7 @@ impl Context {
         if !toplevel_ok {
             anyhow::bail!("Not inside a git repository.");
         }
-        let repo_root = PathBuf::from(repo_root_str.trim());
-
-        // Must run from repo top-level directory
-        if cwd != repo_root {
-            anyhow::bail!("Need to run subrepo command from top level directory of the repo.");
-        }
+        let repo_root = PathBuf::from(repo_root_str).canonicalize()?;
 
         let git_common_dir_str = run_git(&["rev-parse", "--git-common-dir"], &repo_root)?;
         let git_common_dir_display = git_common_dir_str.trim().to_string();
@@ -1234,6 +1230,58 @@ fn subrepo_branch_with_parent(
     Ok(())
 }
 
+/// Remove tracked subtree files while preserving a caller standing inside it.
+pub fn remove_subdir_content(
+    ctx: &Context,
+    subdir: &str,
+    incoming: &str,
+    force: bool,
+) -> Result<()> {
+    let pathspec = format!(":(literal){subdir}");
+    let files = run_git(&["ls-files", "-z", "--", &pathspec], &ctx.repo_root)?;
+    if files.is_empty() {
+        return Ok(());
+    }
+    let cwd = std::env::current_dir()?.canonicalize()?;
+    let inside = cwd.strip_prefix(ctx.repo_root.join(subdir)).ok();
+    if let Some(relative) = inside {
+        let incoming = run_git(
+            &["ls-tree", "-r", "-z", "--name-only", incoming],
+            &ctx.repo_root,
+        )?;
+        if incoming
+            .split('\0')
+            .filter(|path| !path.is_empty())
+            .any(|path| relative.starts_with(path))
+        {
+            anyhow::bail!(
+                "Import would replace your current directory or an ancestor with a file. Run the command from the owning checkout root instead."
+            );
+        }
+    }
+    let mut args = vec!["rm", "-r"];
+    if force {
+        args.push("-f");
+    }
+    if inside.is_some() {
+        args.push("--cached");
+    }
+    args.extend(["--", &pathspec]);
+    run_git(&args, &ctx.repo_root)?;
+    if inside.is_some() {
+        for file in files.split('\0').filter(|path| !path.is_empty()) {
+            let path = ctx.repo_root.join(file);
+            match path.symlink_metadata() {
+                Ok(metadata) if metadata.is_dir() => std::fs::remove_dir_all(path)?,
+                Ok(_) => std::fs::remove_file(path)?,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Delete a subrepo branch and its worktree.
 pub fn delete_branch_and_worktree(ctx: &Context, subdir: &str, subref: &str) -> Result<()> {
     let branch_name = format!("subrepo/{subref}");
@@ -1353,40 +1401,7 @@ pub fn subrepo_commit(
     }
 
     let import_tree = crate::exclusions::import_tree(&ctx.repo_root, subdir, subrepo_commit_ref)?;
-    // Remove existing subdir from index
-    let ls_out = run_git(&["ls-files", "-z", "--", subdir], &ctx.repo_root)?;
-    if !ls_out.is_empty() {
-        let cwd = std::env::current_dir()?;
-        if let Ok(relative) = cwd.strip_prefix(ctx.repo_root.join(subdir)) {
-            // A shell inside the destination keeps an open directory inode.
-            // Removing and recreating that path would strand the caller.
-            let incoming = run_git(
-                &["ls-tree", "-r", "-z", "--name-only", subrepo_commit_ref],
-                &ctx.repo_root,
-            )?;
-            if incoming
-                .split('\0')
-                .filter(|path| !path.is_empty())
-                .any(|path| relative.starts_with(path))
-            {
-                anyhow::bail!(
-                    "Import would replace your current directory or an ancestor with a file. Run 'git subrepo commit {subdir}' from the owning checkout root instead."
-                );
-            }
-            run_git(&["rm", "-r", "--cached", "--", subdir], &ctx.repo_root)?;
-            for file in ls_out.split('\0').filter(|path| !path.is_empty()) {
-                let path = ctx.repo_root.join(file);
-                match path.symlink_metadata() {
-                    Ok(metadata) if metadata.is_dir() => std::fs::remove_dir_all(path)?,
-                    Ok(_) => std::fs::remove_file(path)?,
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(error) => return Err(error.into()),
-                }
-            }
-        } else {
-            run_git(&["rm", "-r", "--", subdir], &ctx.repo_root)?;
-        }
-    }
+    remove_subdir_content(ctx, subdir, &import_tree, false)?;
 
     // Read in the subrepo content
     let prefix = format!("{subdir}/");

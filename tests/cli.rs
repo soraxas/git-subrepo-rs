@@ -294,6 +294,23 @@ fn completion_reads_tracked_nested_subrepos_without_mutating_the_index() {
 }
 
 #[test]
+fn nested_completion_offers_paths_relative_to_the_callers_directory() {
+    let repo = TestRepo::new();
+    for name in ["lib/alpha", "lib/alpha/nested", "space dir"] {
+        let dir = repo.0.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(".gitrepo"), "[subrepo]\nmethod = merge\n").unwrap();
+    }
+    repo.git(&["add", "lib", "space dir"]);
+    let before = std::fs::read(repo.0.join(".git/index")).unwrap();
+    let values = candidates(&repo.0.join("lib/alpha"), "git-subrepo pull ");
+    for expected in [".", "nested", "../../space dir"] {
+        assert!(values.iter().any(|value| value == expected), "{values:?}");
+    }
+    assert_eq!(before, std::fs::read(repo.0.join(".git/index")).unwrap());
+}
+
+#[test]
 fn completion_understands_option_values_and_config_positions_without_a_repository() {
     let dir = std::env::temp_dir();
     for (line, expected, absent) in [

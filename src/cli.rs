@@ -55,6 +55,10 @@ pub struct Cli {
     #[usage(short = 'V', long = "verify", global = true)]
     pub verify: bool,
 
+    /// Confirm executing from a discovered checkout root (does not approve publication)
+    #[usage(short = 'y', long, global = true)]
+    pub yes: bool,
+
     /// Print this help message
     #[usage(short = 'h', long, global = true, action = usage::ArgAction::Help)]
     pub help: bool,

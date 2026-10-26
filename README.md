@@ -87,6 +87,42 @@ git subrepo status
 
 ## Commands
 
+### Running from a subdirectory
+
+Commands discover the current checkout root automatically. Explicit subrepo paths
+resolve from your current directory, like ordinary filesystem paths:
+
+```bash
+cd lib/mylib
+git subrepo config . exclude LOCAL_PATCHES.md
+git subrepo pull
+git subrepo status --no-fetch
+```
+
+`pull`, `push`, `fetch`, `branch`, `clean`, `status`, explicit `pr` operations and
+`commit` infer the nearest enclosing tracked subrepo when their path is omitted.
+`config` and `workon` accept `.` for the current subrepo. At the checkout root,
+commands retain their existing explicit-path or all-subrepo behavior.
+
+Interactive writes show the resolved checkout and target, then ask whether to
+execute there, defaulting to no. Read operations do not prompt. `--yes` (or `-y`)
+skips this location confirmation; it does not bypass publication, overwrite or
+conflict checks. Scripts execute unambiguous cwd-relative paths without prompting.
+
+For compatibility, a path such as `lib/mylib` entered from a nested directory can
+fall back to that existing subrepo at the checkout root only when its cwd-relative
+path does not exist. The CLI reports the fallback. Writes require terminal
+confirmation or `--yes`; `--quiet` and `--force` do not approve it. An explicit
+`./` or `../` path never falls back. If both locations exist, the cwd-relative
+location wins. Paths outside the selected checkout, including external symlinks,
+are rejected. Linked checkouts retain their own root and branch.
+
+Clone destinations and explicit local remote paths also resolve from cwd. Named
+Git remotes and remote URLs keep their usual meaning. Shell completion suggests
+cwd-relative paths, including `.` for the current subrepo. Execution preserves
+the caller's working directory; an import that would replace it with a file is
+rejected before removing tracked content.
+
 ### `clone` — Add a subrepo
 
 ```text
@@ -473,6 +509,7 @@ git subrepo config lib/mylib remote <url>     # update remote URL
 | `--verbose` | `-v` | More output |
 | `--no-edit` | `-n` | Use auto-generated commit message (no editor) |
 | `--verify` | `-V` | Run git hooks on commit (default: `--no-verify`) |
+| `--yes` | `-y` | Confirm execution in the discovered checkout; other confirmations remain active |
 | `--fetch` | `-F` | Fetch before operation |
 
 ## The `.gitrepo` file

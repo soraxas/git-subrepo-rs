@@ -89,11 +89,7 @@ pub fn run(
             return Ok(());
         }
 
-        // Remove existing subdir for reclone
-        let (_, ls) = try_run_git(&["ls-files", "--", &subdir], &ctx.repo_root);
-        if !ls.trim().is_empty() {
-            run_git(&["rm", "-r", "--", &subdir], &ctx.repo_root)?;
-        }
+        super::remove_subdir_content(&ctx, &subdir, &upstream_head, false)?;
 
         // Determine join method
         let join_method = method
@@ -166,13 +162,8 @@ pub fn run(
     // Create subdir
     std::fs::create_dir_all(ctx.repo_root.join(&subdir))?;
 
-    // Remove subdir from index if it has files
-    let (_, ls_out) = try_run_git(&["ls-files", "--", &subdir], &ctx.repo_root);
-    if !ls_out.trim().is_empty() {
-        run_git(&["rm", "-r", "--", &subdir], &ctx.repo_root)?;
-    }
+    super::remove_subdir_content(&ctx, &subdir, &upstream_head, false)?;
 
-    // Read in upstream content
     let prefix = format!("{subdir}/");
     run_git(
         &["read-tree", "--prefix", &prefix, "-u", &upstream_head],
@@ -376,7 +367,8 @@ fn prompt_clone_commit_action(
     }
 }
 
-fn guess_subdir(remote: &str) -> Result<String> {
+/// Derive the default clone directory from a remote's repository name.
+pub(super) fn guess_subdir(remote: &str) -> Result<String> {
     let dir = remote.trim_end_matches('/').trim_end_matches(".git");
     let dir = dir.rsplit('/').next().unwrap_or(dir);
     if dir.is_empty() {
