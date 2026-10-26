@@ -6,6 +6,8 @@ pub mod config;
 pub mod fetch;
 pub mod fix;
 pub mod init;
+mod location;
+pub mod pr;
 pub mod pull;
 pub mod push;
 pub mod status;
@@ -35,7 +37,12 @@ pub struct Context {
 impl Context {
     pub fn new() -> Result<Self> {
         let cwd = std::env::current_dir()?;
-        let (toplevel_ok, repo_root_str) = try_run_git(&["rev-parse", "--show-toplevel"], &cwd);
+        Self::at(&cwd)
+    }
+
+    /// Build a context for a particular checkout without changing process cwd.
+    pub fn at(cwd: &std::path::Path) -> Result<Self> {
+        let (toplevel_ok, repo_root_str) = try_run_git(&["rev-parse", "--show-toplevel"], cwd);
         if !toplevel_ok {
             anyhow::bail!("Not inside a git repository.");
         }
@@ -1323,6 +1330,7 @@ pub fn subrepo_commit(
     force: bool,
     message: Option<&str>,
     verify: bool,
+    preserve_worktree: bool,
 ) -> Result<()> {
     // Check that subrepo_commit_ref exists
     if !rev_exists(subrepo_commit_ref, &ctx.repo_root) {
@@ -1342,9 +1350,38 @@ pub fn subrepo_commit(
     }
 
     // Remove existing subdir from index
-    let (_, ls_out) = try_run_git(&["ls-files", "--", subdir], &ctx.repo_root);
-    if !ls_out.trim().is_empty() {
-        run_git(&["rm", "-r", "--", subdir], &ctx.repo_root)?;
+    let ls_out = run_git(&["ls-files", "-z", "--", subdir], &ctx.repo_root)?;
+    if !ls_out.is_empty() {
+        let cwd = std::env::current_dir()?;
+        if let Ok(relative) = cwd.strip_prefix(ctx.repo_root.join(subdir)) {
+            // A shell inside the destination keeps an open directory inode.
+            // Removing and recreating that path would strand the caller.
+            let incoming = run_git(
+                &["ls-tree", "-r", "-z", "--name-only", subrepo_commit_ref],
+                &ctx.repo_root,
+            )?;
+            if incoming
+                .split('\0')
+                .filter(|path| !path.is_empty())
+                .any(|path| relative.starts_with(path))
+            {
+                anyhow::bail!(
+                    "Import would replace your current directory or an ancestor with a file. Run 'git subrepo commit {subdir}' from the owning checkout root instead."
+                );
+            }
+            run_git(&["rm", "-r", "--cached", "--", subdir], &ctx.repo_root)?;
+            for file in ls_out.split('\0').filter(|path| !path.is_empty()) {
+                let path = ctx.repo_root.join(file);
+                match path.symlink_metadata() {
+                    Ok(metadata) if metadata.is_dir() => std::fs::remove_dir_all(path)?,
+                    Ok(_) => std::fs::remove_file(path)?,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error.into()),
+                }
+            }
+        } else {
+            run_git(&["rm", "-r", "--", subdir], &ctx.repo_root)?;
+        }
     }
 
     // Read in the subrepo content
@@ -1450,8 +1487,10 @@ pub fn subrepo_commit(
         &ctx.repo_root,
     )?;
 
-    // Remove worktree
-    delete_branch_and_worktree(ctx, subdir, subref)?;
+    // An import invoked from workon must leave the caller's shell usable.
+    if !preserve_worktree {
+        delete_branch_and_worktree(ctx, subdir, subref)?;
+    }
 
     Ok(())
 }

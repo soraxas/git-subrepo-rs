@@ -72,6 +72,8 @@ pub enum Commands {
     Pull(PullArgs),
     /// Push local commits upstream
     Push(PushArgs),
+    /// Guided PR actions, or explicit prepare/status/publish/reconcile/close operations
+    Pr(PrArgs),
     /// Fetch upstream without merging
     Fetch(FetchArgs),
     /// Create a branch of local subrepo commits
@@ -84,7 +86,7 @@ pub enum Commands {
     /// check (network required) whether `remote`/`upstream` have moved past the
     /// pinned commit in a way that looks like a rebase, before opening the worktree.
     Workon(WorkonArgs),
-    /// Commit a merged subrepo branch into mainline
+    /// Import workon or merged subrepo commits into the owning checkout
     Commit(CommitArgs),
     /// Show subrepo status
     Status(StatusArgs),

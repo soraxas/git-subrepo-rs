@@ -33,7 +33,8 @@ cargo install --path .
 cargo build --release && cp target/release/git-subrepo ~/.local/bin/
 ```
 
-Requires: `git` ≥ 2.23, Rust ≥ 1.91.
+Requires: `git` ≥ 2.36, Rust ≥ 1.91. Context detection uses Git's
+NUL-delimited worktree listing to handle paths containing spaces or newlines.
 
 For Fish tab completion, run this after installing the binary:
 
@@ -50,13 +51,25 @@ The installed script calls the binary, so suggestions stay current after upgrade
 No separate Usage CLI installation is needed.
 
 `git subrepo completion <shell>` also supports `bash`, `zsh`, `elvish`, `nushell`,
-and `powershell`. To regenerate the bundled Fish script during development:
-
-```bash
-cargo run -- completion fish > etc/git-subrepo.fish
-```
+and `powershell`.
 
 ## Quick start
+
+Run `git subrepo pr` in a terminal for guided PR actions. Use ↑/↓ and Enter to
+choose a subrepo and action; Esc goes back. Open an existing export, review changes, or
+prepare a contribution. Existing exports are found across the repository's
+worktrees, so uncommitted source changes do not prevent resuming review work
+prepared from another checkout. Every export shows its owning checkout.
+
+Opening an export starts your shell there; type `exit` to return to
+the menu. Preparation prompts for a topic, public message and destinations.
+Publishing displays the exact commit history/diff and asks for confirmation;
+it does not run tests or an AI audit for you. Acceptance stages the import in
+the export's owning checkout for review and a separate commit.
+
+Bare `git subrepo` always prints help. Without a terminal, bare `git subrepo pr`
+prints instructions instead of prompting. Explicit PR commands remain available
+to scripts and agents.
 
 ```bash
 # Add an external repo as a subrepo
@@ -127,6 +140,39 @@ git subrepo push lib/mylib
 git subrepo push lib/mylib -b feature-branch   # push to a different branch
 git subrepo push -a                             # push all subrepos
 ```
+
+### `pr` — Export changes through a reviewed upstream PR
+
+Use this workflow when contributing a vendored change through a pull request.
+It keeps the accepted upstream sync baseline separate from an open PR and gives
+review fixes a persistent standalone repository. This workflow requires Git 2.38
+or newer.
+
+```bash
+git subrepo pr prepare lib/mylib --branch contribute/feature --message 'feat: add shared capability'
+git subrepo pr status lib/mylib
+# Review/test the printed repository; append review fixes there as normal commits.
+git subrepo pr publish lib/mylib --expected-head <full-reviewed-sha>
+# Create the PR explicitly with gh or GitHub; after it is merged:
+git subrepo pr reconcile lib/mylib --merged <accepted-upstream-sha>
+# Inspect/test the staged import, then commit it in the owning repository.
+```
+
+Preparation and publication do not change the owner's HEAD, index or `.gitrepo`.
+Reconciliation stages the accepted result together with unexported and later
+local changes. Both normal PR merges and content-equivalent squash merges are
+supported. Root `.gitrepo` metadata and monorepo commit messages are excluded
+from the initial export.
+
+Use repeated `--path <literal-path>` arguments on prepare for a focused export;
+paths are relative to the subrepo. `--base` selects the upstream target branch,
+`--upstream` selects its fetch URL, and `--remote` selects a separate push URL
+(for example a fork). Topic and base branches must differ. `pr close` closes
+only the local session and retains its repository; it does not close a GitHub PR.
+
+See [the PR export workflow](docs/pr-exports.md) for review fixes, conflict
+recovery, authorization and merge policies. The reusable agent skill is
+[upstream-export](.agents/skills/upstream-export/SKILL.md).
 
 ### `fetch` — Fetch upstream (without merging)
 
@@ -212,6 +258,46 @@ git subrepo workon lib/mylib                                   # own repo, plain
 git subrepo workon lib/mylib -u git@github.com:someone/mylib   # your fork of someone else's repo
 ```
 
+**Bring workon changes back into the main repository**: commits made inside
+the workon worktree stay on its subrepo branch until you import them. Exiting
+the shell alone does not update the main repository's files.
+
+```bash
+# Start in the main repository with a clean working tree.
+git subrepo workon lib/mylib
+
+# Inside the workon shell: edit files, then commit your changes.
+git add -A
+git commit -m "Improve mylib"
+
+# Still inside workon: import those commits into the owning repository.
+git subrepo commit
+
+# Keep working here, or return to the main repository.
+exit
+```
+
+Inside a workon tree or any of its subdirectories, `git subrepo commit`
+detects the subrepo and owning checkout. It copies the current worktree HEAD
+into the owner's subrepo directory, updates `.gitrepo`, and creates a single
+commit on the owner's checked-out branch. This also works after switching
+to a feature branch inside workon. It prints the destination checkout and
+branch and preserves your workon tree so you can continue working.
+
+Both checkouts must be clean, including untracked files: use ordinary
+`git commit` to save your work first, or stash changes you are not importing.
+Detection uses Git's worktree metadata and tracked `.gitrepo` files, so it
+also works when you entered manually with `--no-shell`. If multiple
+checkouts could own the subrepo, the command stops and asks you to run it
+from the intended checkout instead.
+
+You can also exit workon first and run `git subrepo commit lib/mylib` from
+the main repository root. That form imports `subrepo/lib/mylib` and removes
+the temporary worktree and subrepo branch after success.
+
+No remote push is required for this local workflow. To publish the imported
+changes afterward, run `git subrepo push lib/mylib` from the main repository.
+
 Persist an upstream so you don't have to pass `-u` every time:
 
 ```bash
@@ -238,10 +324,12 @@ your own fork and `upstream` set to the original project.
    `remote` (now up to date) and re-pins `.gitrepo` — this also correctly
    keeps any local-only commits you never pushed.
 
-**Caution**: `workon`'s worktree is not protected from `push`/`pull`/
-`branch --force` run elsewhere — those rebuild it from mainline history and
-will discard anything you haven't pushed yet. Finish and push from the
-`workon` session before running those on the same subdir.
+**Caution**: `git subrepo push`, `git subrepo pull`, and
+`git subrepo branch --force` can rebuild the workon worktree from mainline
+history. Before running them on the same subdir, commit your workon changes
+and either import them with `git subrepo commit` as above or publish them
+with plain `git push` from inside workon. Uncommitted changes and commits
+that exist only in the workon branch can otherwise be lost.
 
 **When `remote`/`upstream` gets rebased out from under you**: `workon`
 always rebuilds faithfully from whatever `.gitrepo` currently has pinned —
@@ -264,13 +352,36 @@ git subrepo workon lib/mylib -F
 #   Recommended: run `git subrepo pull lib/mylib` first to re-sync.
 ```
 
-### `commit` — Finalise a manual merge
+### `commit` — Import workon changes or finalise a manual merge
 
 ```text
-git subrepo commit <subdir> [<ref>] [-m <msg>]
+git subrepo commit [<subdir>] [<ref>] [-m <msg>]
 ```
 
-After resolving a conflict by hand, use this to take the HEAD of `subrepo/<subdir>`, put its content into the subdir, and add a single commit to your mainline.
+Import committed subrepo content after working in `workon` or resolving a
+manual merge. This updates the destination's `<subdir>` and `.gitrepo` and
+creates a single commit there; it does not stage or commit unfinished edits
+in the source worktree.
+
+| Where you run it | Subrepo selection | Default source | Worktree cleanup |
+|------------------|-------------------|----------------|------------------|
+| Workon tree or a directory inside it | Inferred | Current worktree HEAD | Preserved |
+| Inside a subrepo directory in the main checkout | Nearest enclosing tracked `.gitrepo` | `subrepo/<subdir>` | Removed after success |
+| Main checkout root | Explicit `<subdir>` required | `subrepo/<subdir>` | Removed after success |
+
+The destination working tree must be clean. When importing from workon,
+both checkouts must be clean and the destination must have a branch checked
+out. A bare import from inside a main-checkout subrepo also refuses to
+remove a source worktree containing unfinished changes. If ownership is
+ambiguous, exit workon and run the command from the
+intended checkout root with an explicit subdir and source ref.
+
+To select a different source from the main repository, supply both
+`<subdir>` and `<ref>`:
+
+```bash
+git subrepo commit lib/mylib my-feature -m "Update mylib"
+```
 
 ### `status` — Show subrepo state
 

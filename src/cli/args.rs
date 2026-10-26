@@ -92,6 +92,39 @@ pub struct FetchArgs {
 
 #[derive(usage::Args)]
 #[usage(args_override_self = false)]
+pub struct PrArgs {
+    #[usage(choices("prepare", "status", "publish", "reconcile", "close"))]
+    pub action: Option<String>,
+    #[usage(complete = completion::subrepos)]
+    pub subdir: Option<String>,
+    /// Topic branch to publish; must differ from the upstream base branch
+    #[usage(long)]
+    pub branch: Option<String>,
+    /// Upstream target branch (default: tracked .gitrepo branch)
+    #[usage(long)]
+    pub base: Option<String>,
+    /// Push URL, such as a fork (default: tracked remote)
+    #[usage(long)]
+    pub remote: Option<String>,
+    /// Fetch URL to reconcile from (default: tracked remote)
+    #[usage(long)]
+    pub upstream: Option<String>,
+    /// Public export commit message, required for prepare
+    #[usage(short = 'm', long)]
+    pub message: Option<String>,
+    /// Literal file/directory inside the subrepo to export; repeat for multiple paths
+    #[usage(long)]
+    pub path: Vec<String>,
+    /// Full reviewed candidate SHA, required for publish
+    #[usage(long)]
+    pub expected_head: Option<String>,
+    /// Accepted upstream commit SHA, required for reconcile
+    #[usage(long)]
+    pub merged: Option<String>,
+}
+
+#[derive(usage::Args)]
+#[usage(args_override_self = false)]
 pub struct BranchArgs {
     #[usage(complete = completion::subrepos)]
     pub subdir: Option<String>,
@@ -113,8 +146,9 @@ pub struct WorkonArgs {
 #[derive(usage::Args)]
 #[usage(args_override_self = false)]
 pub struct CommitArgs {
+    /// Subrepo to import; inferred inside a subrepo directory or workon tree
     #[usage(complete = completion::subrepos)]
-    pub subdir: String,
+    pub subdir: Option<String>,
     #[usage(complete = completion::refs)]
     pub subrepo_commit_ref: Option<String>,
     #[usage(short = 'm', long, value_hint = usage::ValueHint::Other)]

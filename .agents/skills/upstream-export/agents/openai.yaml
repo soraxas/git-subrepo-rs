@@ -1,0 +1,4 @@
+interface:
+  display_name: "Upstream Export"
+  short_description: "Audit and prepare reviewed git-subrepo upstream PRs"
+  default_prompt: "Use $upstream-export to audit and prepare a focused upstream PR from this vendored component."

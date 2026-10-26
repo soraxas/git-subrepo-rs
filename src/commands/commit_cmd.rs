@@ -1,11 +1,30 @@
-use crate::commands::{Context, assert_clean_for, normalize_subdir, subrepo_commit};
+use crate::commands::{
+    assert_clean_for,
+    location::{cleanup_worktrees, resolve_commit},
+    subrepo_commit,
+};
 use crate::encode::encode_subdir;
 use crate::git_utils::{rev_exists, run_git};
 use crate::gitrepo::read_gitrepo;
 use anyhow::Result;
 
+fn assert_clean_import(name: &str, path: &std::path::Path) -> Result<()> {
+    if !run_git(
+        &["status", "--porcelain", "-z", "--untracked-files=all"],
+        path,
+    )?
+    .is_empty()
+    {
+        anyhow::bail!(
+            "{name} '{}' has uncommitted changes. Commit or stash them before importing.",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
 pub fn run(
-    subdir: String,
+    subdir: Option<String>,
     subrepo_commit_ref_arg: Option<String>,
     force: bool,
     fetch: bool,
@@ -13,10 +32,21 @@ pub fn run(
     message: Option<String>,
     verify: bool,
 ) -> Result<()> {
-    let ctx = Context::new()?;
+    let inferred = subdir.is_none();
+    let location = resolve_commit(&std::env::current_dir()?, subdir.as_deref())?;
+    let ctx = location.context;
+    let subdir = location.subdir;
+    if let Some(source) = &location.source_worktree {
+        assert_clean_import("Workon tree", source)?;
+        assert_clean_import("Owning checkout", &ctx.repo_root)?;
+    } else if inferred {
+        assert_clean_import("Owning checkout", &ctx.repo_root)?;
+        for source in cleanup_worktrees(&ctx, &subdir)? {
+            assert_clean_import("Subrepo worktree", &source)?;
+        }
+    }
     assert_clean_for("commit", &ctx)?;
 
-    let subdir = normalize_subdir(&subdir);
     let subref = encode_subdir(&subdir);
 
     let gitrepo_path = ctx.repo_root.join(&subdir).join(".gitrepo");
@@ -32,7 +62,16 @@ pub fn run(
         anyhow::bail!("Can't find ref '{refs_subrepo_fetch}'. Try using -F.");
     };
 
-    let commit_ref = subrepo_commit_ref_arg.unwrap_or_else(|| format!("subrepo/{subref}"));
+    let commit_ref = match &location.source_worktree {
+        Some(source) => {
+            let reference = subrepo_commit_ref_arg.as_deref().unwrap_or("HEAD");
+            run_git(
+                &["rev-parse", "--verify", &format!("{reference}^{{commit}}")],
+                source,
+            )?
+        }
+        None => subrepo_commit_ref_arg.unwrap_or_else(|| format!("subrepo/{subref}")),
+    };
 
     let commit_msg = message.unwrap_or_else(|| {
         crate::commands::build_commit_message(
@@ -46,6 +85,13 @@ pub fn run(
         )
     });
 
+    if (inferred || location.source_worktree.is_some()) && !quiet {
+        println!(
+            "Importing subrepo '{subdir}' into '{}' on branch '{}'.",
+            ctx.repo_root.display(),
+            ctx.original_head_branch
+        );
+    }
     subrepo_commit(
         &ctx,
         &subdir,
@@ -58,6 +104,7 @@ pub fn run(
         force,
         Some(&commit_msg),
         verify || cfg.verify,
+        location.source_worktree.is_some(),
     )?;
 
     if !quiet {

@@ -71,7 +71,7 @@ All commands follow `git subrepo <command> [<subdir>] [options]`.
 | `push <subdir>` | Push local subrepo commits upstream |
 | `fetch <subdir>` | Fetch upstream without merging |
 | `branch <subdir>` | Create branch containing local subrepo commits |
-| `commit <subdir>` | Commit a merged subrepo branch back to mainline |
+| `commit [<subdir>] [<ref>]` | Import committed subrepo content into its owning checkout; infer subdir inside a subrepo or workon tree |
 | `status [<subdir>]` | Show subrepo status |
 | `clean <subdir>` | Remove branches/refs/worktrees for subrepo |
 | `config <subdir> <key> [<value>]` | Read/write .gitrepo config values |

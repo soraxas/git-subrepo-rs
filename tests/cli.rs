@@ -53,6 +53,26 @@ fn version_remains_a_plain_number_without_a_repository() {
 }
 
 #[test]
+fn pr_guidance_does_not_swallow_incomplete_operations_or_options() {
+    for args in [vec!["pr"], vec!["pr", "--quiet"]] {
+        let output = run(&args);
+        assert!(output.status.success());
+        assert!(String::from_utf8_lossy(&output.stdout).contains("git subrepo pr --help"));
+    }
+    for args in [
+        vec!["pr", "prepare"],
+        vec!["pr", "status"],
+        vec!["pr", "--branch", "topic"],
+        vec!["pr", "--expected-head", "abc"],
+        vec!["pr", "--merged", "abc"],
+    ] {
+        let output = run(&args);
+        assert!(!output.status.success(), "{args:?}");
+        assert!(!String::from_utf8_lossy(&output.stdout).contains("guided PR actions"));
+    }
+}
+
+#[test]
 fn help_is_successful_and_written_to_stdout_without_a_repository() {
     for args in [vec!["--help"], vec!["pull", "--help"], vec!["help", "pull"]] {
         let output = run(&args);
@@ -341,7 +361,6 @@ fn commit_completion_offers_local_refs() {
 }
 
 fn fish_candidates(dir: &std::path::Path, line: &str) -> Vec<String> {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let binary_dir = std::path::Path::new(env!("CARGO_BIN_EXE_git-subrepo"))
         .parent()
         .unwrap();
@@ -349,11 +368,10 @@ fn fish_candidates(dir: &std::path::Path, line: &str) -> Vec<String> {
         .args([
             "--no-config",
             "-c",
-            "set -p PATH $argv[1]; set -p fish_complete_path $argv[2]; complete -C \"$argv[3]\"",
+            "set -p PATH $argv[1]; command git-subrepo completion fish | source; complete -C \"$argv[2]\"",
             "--",
         ])
         .arg(binary_dir)
-        .arg(root.join("etc"))
         .arg(line)
         .current_dir(dir)
         .output()
@@ -372,7 +390,7 @@ fn fish_candidates(dir: &std::path::Path, line: &str) -> Vec<String> {
 }
 
 #[test]
-fn bundled_fish_script_completes_both_invocation_forms() {
+fn generated_fish_script_completes_both_invocation_forms() {
     if Command::new("fish").arg("--version").output().is_err() {
         eprintln!("skipping Fish integration check: fish is not installed");
         return;

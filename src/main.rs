@@ -51,13 +51,22 @@ fn print_no_command_help() {
         ("init", "<subdir>", "Turn a subdir into a subrepo"),
         ("pull", "[<subdir>]", "Pull upstream changes"),
         ("push", "[<subdir>]", "Push local commits upstream"),
+        (
+            "pr",
+            "<action> <subdir>",
+            "Prepare and publish reviewed PR exports",
+        ),
         ("fetch", "[<subdir>]", "Fetch upstream (creates ref)"),
         (
             "branch",
             "[<subdir>]",
             "Create a branch of local subrepo commits",
         ),
-        ("commit", "<subdir>", "Commit a merged branch into mainline"),
+        (
+            "commit",
+            "[<subdir>]",
+            "Import workon or merged subrepo commits",
+        ),
         (
             "workon",
             "<subdir>",
@@ -217,7 +226,7 @@ async fn main() {
         match cli.command {
             None => {
                 print_no_command_help();
-                std::process::exit(0);
+                Ok(())
             }
             Some(Commands::Completion(cli::CompletionArgs { shell })) => {
                 let shell =
@@ -515,6 +524,12 @@ async fn main() {
                         subdir, branch, remote, force, method, squash, quiet, message,
                     )
                 }
+            }
+            Some(Commands::Pr(args)) => {
+                if all || all_all || force || fetch {
+                    anyhow::bail!("PR sessions do not accept --all, --force or --fetch.");
+                }
+                commands::pr::run(args, quiet)
             }
             Some(Commands::Fetch(cli::FetchArgs {
                 subdir,
