@@ -283,6 +283,8 @@ fn prepare(ctx: &Context, root: &Path, args: &PrArgs, quiet: bool) -> Result<()>
     }
     session.set("owner", ctx.repo_root.to_string_lossy());
     session.set("repository", work.to_string_lossy());
+    session.set("created-at", state::now()?);
+    session.set("source-branch", &ctx.original_head_branch);
     session.set_exclusions(&cfg.exclude);
     session.save()?;
     run_git(&["cherry-pick", &snapshot], &work).map_err(|error| anyhow::anyhow!("{error}\nExport requires resolution in {}. Resolve and run git cherry-pick --continue there; the owning checkout is unchanged.", work.display()))?;
@@ -302,6 +304,9 @@ fn status(root: &Path) -> Result<()> {
     let session = Session::load(root)?;
     for (key, value) in &session.values {
         println!("{key}: {value}");
+    }
+    if session.optional("created-at").is_empty() {
+        println!("created-at: {}", session.created_at()?);
     }
     let work = session.repo()?;
     let head = git::head(&work)?;
@@ -397,6 +402,9 @@ fn publish(root: &Path, args: &PrArgs, quiet: bool) -> Result<()> {
             ],
             &work,
         )?;
+    }
+    if session.optional("published") != head {
+        session.set("published-at", state::now()?);
     }
     session.set("published", &head);
     session.save()?;

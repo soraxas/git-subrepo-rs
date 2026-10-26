@@ -1,5 +1,6 @@
 """Exercise the actual CLI in a PTY using only Python's standard library."""
 import errno
+from datetime import datetime, timezone
 import fcntl
 import os
 from pathlib import Path
@@ -288,6 +289,45 @@ class GuidedMenu(unittest.TestCase):
         terminal.expect("Execute in this checkout?")
         terminal.send("\n")
         self.assertEqual(terminal.wait(), 0)
+
+    def test_export_menu_displays_creation_source_and_recorded_policy(self):
+        source = self.git(self.owner, "rev-parse", "HEAD")
+        export = self.prepare()
+        session = export.parents[2] / "session"
+        self.git(self.owner, "config", "--file", str(session), "export.created-at", "2026-10-14 08:45:00 UTC")
+        before = session.read_bytes()
+        terminal = self.terminal(self.owner)
+        terminal.expect("Workflow:")
+        terminal.expect("Created: 2026-10-14 08:45:00 UTC")
+        terminal.expect("Source: " + source[:12])
+        terminal.expect("Recorded exclusions: none")
+        self.choose(terminal, "Quit")
+        self.assertEqual(terminal.wait(), 0)
+        self.assertEqual(session.read_bytes(), before)
+
+    def test_legacy_export_date_and_policy_mismatch_are_visible_from_sibling(self):
+        export = self.prepare()
+        session = export.parents[2] / "session"
+        # Simulate an export prepared before date/policy fields existed.
+        for key in ("created-at", "source-branch", "exclude-count"):
+            subprocess.run(["git", "config", "--file", str(session), "--unset-all", "export." + key],
+                           cwd=self.owner, env=self.env, check=False, capture_output=True)
+        sibling = self.root / "different checkout"
+        self.git(self.owner, "worktree", "add", "-b", "later", str(sibling))
+        self.git(sibling, "config", "--file", "lib/unit/.gitrepo", "subrepo.exclude", "LOCAL_PATCHES.md")
+        before = session.read_bytes()
+        expected = datetime.fromtimestamp(int(export.parent.name) // 1_000_000_000,
+                                          tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        terminal = self.terminal(sibling)
+        terminal.expect('Current exclusions: "LOCAL_PATCHES.md"')
+        terminal.expect("Created: " + expected)
+        terminal.expect("legacy session ID")
+        terminal.expect("Recorded exclusions: not recorded")
+        terminal.expect("Exclusions differ from this checkout")
+        self.choose(terminal, "Quit")
+        self.assertEqual(terminal.wait(), 0)
+        self.assertEqual(session.read_bytes(), before)
+        self.assertEqual((export / "file").read_text(), "local change\n")
 
 
 if __name__ == "__main__":

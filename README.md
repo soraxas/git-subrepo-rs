@@ -59,7 +59,11 @@ Run `git subrepo pr` in a terminal for guided PR actions. Use ↑/↓ and Enter 
 choose a subrepo and action; Esc goes back. Open an existing export, review changes, or
 prepare a contribution. Existing exports are found across the repository's
 worktrees, so uncommitted source changes do not prevent resuming review work
-prepared from another checkout. Every export shows its owning checkout.
+prepared from another checkout. Every export shows its owning checkout, creation
+time in UTC, source revision/branch, recorded exclusions and publication time.
+The menu flags exclusions that differ from the current checkout. Opening resumes
+the saved snapshot; new source or settings require closing that session and
+preparing again. Closing retains the export repository and remote branch.
 
 Opening an export starts your shell there; type `exit` to return to
 the menu. Preparation prompts for a topic, public message and destinations.

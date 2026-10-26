@@ -211,6 +211,12 @@ fn prepare_exports_only_public_history_without_changing_owner_or_sync_state() {
     let before = git(&f.owner, &["rev-parse", "HEAD"]);
     let metadata = std::fs::read(f.owner.join("lib/unit/.gitrepo")).unwrap();
     let work = f.prepare("contribute/viewer", &[]);
+    let status = success(cli(&f.owner, &["pr", "status", "lib/unit"]));
+    assert!(
+        status.contains("created-at: ") && status.contains(" UTC"),
+        "{status}"
+    );
+    assert!(status.contains("source-branch: main"), "{status}");
     assert_eq!(
         std::fs::read_to_string(work.join("file")).unwrap(),
         "shared improvement\n"
@@ -243,6 +249,42 @@ fn publish_requires_current_reviewed_head_and_appends_review_fixes_without_repin
     f.edit("file", "initial\n");
     let work = f.prepare("contribute/review", &[]);
     let first = f.publish(&work);
+    let status = success(cli(&f.owner, &["pr", "status", "lib/unit"]));
+    assert!(
+        status.contains("published-at: ") && status.contains(" UTC"),
+        "{status}"
+    );
+    let record = work
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("session");
+    git(
+        &f.owner,
+        &[
+            "config",
+            "--file",
+            record.to_str().unwrap(),
+            "export.published-at",
+            "2026-10-14 08:45:00 UTC",
+        ],
+    );
+    f.publish(&work);
+    assert_eq!(
+        git(
+            &f.owner,
+            &[
+                "config",
+                "--file",
+                record.to_str().unwrap(),
+                "export.published-at"
+            ]
+        ),
+        "2026-10-14 08:45:00 UTC"
+    );
     let before = git(&f.owner, &["rev-parse", "HEAD"]);
     std::fs::write(work.join("file"), "reviewed\n").unwrap();
     git(&work, &["commit", "-qam", "Fix review feedback"]);
@@ -256,6 +298,18 @@ fn publish_requires_current_reviewed_head_and_appends_review_fixes_without_repin
     );
     assert_eq!(git(&f.remote, &["rev-parse", "contribute/review"]), first);
     let second = f.publish(&work);
+    assert_ne!(
+        git(
+            &f.owner,
+            &[
+                "config",
+                "--file",
+                record.to_str().unwrap(),
+                "export.published-at"
+            ]
+        ),
+        "2026-10-14 08:45:00 UTC"
+    );
     assert_eq!(git(&f.remote, &["rev-parse", "contribute/review"]), second);
     assert_eq!(git(&f.owner, &["rev-parse", "HEAD"]), before);
     assert_eq!(

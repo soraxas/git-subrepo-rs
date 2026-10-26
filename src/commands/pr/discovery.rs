@@ -16,6 +16,12 @@ pub(crate) struct Export {
     pub base_branch: String,
     pub upstream: String,
     pub remote: String,
+    pub created_at: String,
+    pub source: String,
+    pub source_branch: String,
+    pub published_at: String,
+    pub exclusions: Vec<String>,
+    pub policy_recorded: bool,
 }
 
 /// Resolve the checkout-local session directory for a normalized subrepo path.
@@ -65,6 +71,12 @@ pub(crate) fn exports(ctx: &Context, subdir: &str) -> Result<Vec<Export>> {
             base_branch: session.get("base-branch")?.to_owned(),
             upstream: session.get("upstream")?.to_owned(),
             remote: session.get("remote")?.to_owned(),
+            created_at: session.created_at()?,
+            source: session.get("source")?.to_owned(),
+            source_branch: session.optional("source-branch").to_owned(),
+            published_at: session.optional("published-at").to_owned(),
+            exclusions: session.exclusions()?,
+            policy_recorded: session.values.contains_key("exclude-count"),
         });
     }
     found.sort_by_key(|export| (export.owner != ctx.repo_root, export.owner.clone()));

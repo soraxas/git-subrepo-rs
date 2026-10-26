@@ -69,14 +69,19 @@ pub fn run() -> Result<()> {
                 "uncommitted"
             }
         );
+        println!(
+            "Workflow: commit source/config -> prepare -> review/test -> publish -> upstream acceptance -> reconcile"
+        );
+        println!("Current source: {}", ctx.original_head_commit);
+        let policy = current_policy(&ctx, &subdir);
+        println!("Root .gitrepo is always omitted from exports.");
         for export in &exports {
             println!(
-                "Existing export: {} [{}]\n  Owner: {}\n  Destination: {}",
+                "Existing export: {} [{}]",
                 export.branch,
                 export_status(export)?,
-                export.owner.display(),
-                export.remote
             );
+            show_export(export, policy.as_deref());
         }
         let mut actions = Vec::new();
         if !exports.is_empty() {
@@ -143,6 +148,8 @@ fn perform(
                 export.owner.display(),
                 export.repository.display()
             );
+            let policy = current_policy(ctx, subdir);
+            show_export(export, policy.as_deref());
             match action {
                 Action::Open => open_shell(&export.repository),
                 Action::ReviewExport => {
@@ -177,6 +184,86 @@ fn perform(
             }
         }
     }
+}
+
+fn current_policy(ctx: &Context, subdir: &str) -> Option<Vec<String>> {
+    match read_gitrepo(&ctx.repo_root.join(subdir).join(".gitrepo"), &ctx.repo_root) {
+        Ok(config) => {
+            println!("Current exclusions: {}", display_paths(&config.exclude));
+            Some(config.exclude)
+        }
+        Err(error) => {
+            println!("Current exclusions: unavailable ({error})");
+            None
+        }
+    }
+}
+
+fn display_paths(paths: &[String]) -> String {
+    if paths.is_empty() {
+        "none".to_owned()
+    } else {
+        paths
+            .iter()
+            .map(|p| format!("{p:?}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+fn show_export(export: &discovery::Export, current_policy: Option<&[String]>) {
+    println!(
+        "  Created: {}\n  Source: {}{}\n  Owner: {}\n  Upstream: {} ({})\n  Destination: {} ({})",
+        export.created_at,
+        &export.source[..export.source.len().min(12)],
+        if export.source_branch.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", export.source_branch)
+        },
+        export.owner.display(),
+        export.upstream,
+        export.base_branch,
+        export.remote,
+        export.branch
+    );
+    println!(
+        "  Recorded exclusions: {}",
+        if export.policy_recorded {
+            display_paths(&export.exclusions)
+        } else {
+            "not recorded (older export)".to_owned()
+        }
+    );
+    if export.published.is_empty() {
+        println!("  Published: not yet");
+    } else {
+        println!(
+            "  Published: {} ({})",
+            if export.published_at.is_empty() {
+                "date not recorded"
+            } else {
+                &export.published_at
+            },
+            &export.published[..export.published.len().min(12)]
+        );
+    }
+    if let Some(current) = current_policy {
+        let normalized = |paths: &[String]| {
+            paths
+                .iter()
+                .map(|p| p.trim_end_matches('/').to_owned())
+                .collect::<std::collections::BTreeSet<_>>()
+        };
+        if normalized(current) != normalized(&export.exclusions) {
+            println!(
+                "  Exclusions differ from this checkout; this export keeps its recorded policy."
+            );
+        }
+    }
+    println!(
+        "  Opening resumes this snapshot. To use new source/settings, close its session and prepare again."
+    );
 }
 
 fn prepare(ctx: &Context, subdir: &str) -> Result<()> {

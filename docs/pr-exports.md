@@ -13,6 +13,20 @@ registered owner worktrees and identifies each export's owner and destination.
 It also works from inside a retained export. Opening a checkout starts your
 shell there; `exit` returns to the menu without rebuilding the checkout.
 
+The menu shows the workflow and each export's creation time in UTC, source
+revision/branch, recorded exclusion policy, owner, destinations and last
+publication time. It compares the saved policy with the current checkout's
+settings, including uncommitted settings, and flags differences. Those settings
+do not change a retained export. Commit the intended source/configuration, close
+the old session with `git subrepo pr close <subdir>`, then prepare again from
+that checkout to create a new snapshot. Preserve any review fixes first.
+
+Older exports recover their creation date from their timestamp-based session
+ID, labelled as such; unrecognized IDs show an unknown date. Missing publication
+dates and source branch names remain unknown. Viewing the menu or status never
+rewrites a session or invents a publication date. Publication timestamps record
+when the tool published a new revision, rather than the source commit's date.
+
 **Prepare new contribution** prompts for an editable topic, public message,
 upstream/base and push destination. It exports committed source only. If the
 current subtree is dirty, the menu shows the changed files and existing exports;
