@@ -87,14 +87,17 @@ pub(super) fn run(ctx: &Context, root: &Path, args: &PrArgs, quiet: bool) -> Res
             owner,
         )?;
         let local_tree = git::subtree(owner, subdir, &root.join("reconcile-index"))?;
-        let proposal = session.get("proposal")?;
-        let local = git::commit(owner, &local_tree, proposal, "Retained local changes")?;
-        let incoming = git::commit(
+        let mut exclusions = session.exclusions()?;
+        exclusions.extend(cfg.exclude.iter().cloned());
+        let incoming_tree = crate::exclusions::restore(
             owner,
             &git::tree(owner, merged)?,
-            proposal,
-            "Accepted upstream changes",
+            &local_tree,
+            &exclusions,
         )?;
+        let proposal = session.get("proposal")?;
+        let local = git::commit(owner, &local_tree, proposal, "Retained local changes")?;
+        let incoming = git::commit(owner, &incoming_tree, proposal, "Accepted upstream changes")?;
         let (ok, result) = try_run_git(&["merge-tree", "--write-tree", &local, &incoming], owner);
         if !ok {
             begin_resolution(ctx, &mut session, &local, &incoming, merged)?;

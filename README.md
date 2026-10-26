@@ -492,14 +492,38 @@ Every subrepo directory contains a `.gitrepo` file that tracks its state:
     parent = deadbeef1234...   # main-repo HEAD at time of last pull
     method = merge
     cmdver = 0.0.1
+    exclude = LOCAL_PATCHES.md
+    exclude = docs/local-notes/
 ```
 
 - `commit` — the upstream commit that is currently checked in
 - `parent` — the main repo commit that was HEAD when this subrepo was last pulled/cloned. Used to find local-only commits when pushing.
 - `method` — `merge` (default) or `rebase`
 - `upstream` — optional; the original project's URL (when `remote` is your own fork of it). `git subrepo workon` adds it as a plain named `upstream` remote for explicit use — `remote` stays the default push/pull target either way. Not written by `clone`/`init`, only via `config`.
+- `exclude` — optional and repeatable; literal file or directory paths relative
+  to the subrepo root. Keep their local changes out of PR exports and direct
+  subrepo pushes, and preserve local content on pull/import. A trailing `/` is
+  accepted for directories; wildcard characters are literal. This is a
+  git-subrepo-rs extension; other implementations may ignore it.
 
 The `.gitrepo` file is committed to **your** repo but is **not** pushed to the upstream subrepo remote.
+
+Configure one exclusion, or append several, then commit the metadata in your
+owning repository:
+
+```bash
+git subrepo config lib/mylib exclude LOCAL_PATCHES.md
+git config --file lib/mylib/.gitrepo --add subrepo.exclude docs/local-notes/
+git subrepo config lib/mylib exclude
+```
+
+`git subrepo config ... exclude <path>` replaces the exclusion list. To remove
+the list, use `git config --file lib/mylib/.gitrepo --unset-all subrepo.exclude`.
+Excluding an existing upstream file preserves its upstream version; it does not
+delete that file from the remote. New local-only files are omitted entirely.
+The root `.gitrepo` is always omitted automatically. Nested `.gitrepo` files and
+vendor patch ledgers remain included unless explicitly excluded. See
+[export policy and session behavior](docs/pr-exports.md#persistent-exclusions).
 
 ## Nested subrepos
 

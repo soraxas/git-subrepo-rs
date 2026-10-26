@@ -191,6 +191,8 @@ fn prepare(ctx: &Context, root: &Path, args: &PrArgs, quiet: bool) -> Result<()>
 
     let index = root.join("snapshot-index");
     let source_tree = git::subtree(&ctx.repo_root, subdir, &index)?;
+    let source_tree =
+        crate::exclusions::restore(&ctx.repo_root, &source_tree, &cfg.commit, &cfg.exclude)?;
     let proposal = if args.path.is_empty() {
         source_tree
     } else {
@@ -281,9 +283,13 @@ fn prepare(ctx: &Context, root: &Path, args: &PrArgs, quiet: bool) -> Result<()>
     }
     session.set("owner", ctx.repo_root.to_string_lossy());
     session.set("repository", work.to_string_lossy());
+    session.set_exclusions(&cfg.exclude);
     session.save()?;
     run_git(&["cherry-pick", &snapshot], &work).map_err(|error| anyhow::anyhow!("{error}\nExport requires resolution in {}. Resolve and run git cherry-pick --continue there; the owning checkout is unchanged.", work.display()))?;
     if !quiet {
+        for path in &cfg.exclude {
+            eprintln!("Excluded local changes: {path:?}");
+        }
         eprintln!(
             "Prepared PR branch '{branch}' against '{base}'. Review and test this standalone repository before publishing."
         );
@@ -330,6 +336,11 @@ fn candidate(session: &Session) -> Result<String> {
         ensure!(
             !try_run_git(&["cat-file", "-e", &format!("{commit}:.gitrepo")], &work).0,
             "Outgoing commit {commit} contains root .gitrepo metadata"
+        );
+        let tree = git::tree(&work, commit)?;
+        ensure!(
+            crate::exclusions::restore(&work, &tree, base, &session.exclusions()?)? == tree,
+            "Outgoing commit {commit} changes an excluded path"
         );
     }
     Ok(head)

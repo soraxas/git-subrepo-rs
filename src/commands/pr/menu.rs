@@ -208,8 +208,12 @@ fn prepare(ctx: &Context, subdir: &str) -> Result<()> {
     let upstream = prompt("Upstream URL", Some(upstream))?;
     let base = prompt("Base branch", Some(&cfg.branch))?;
     let remote = prompt("Push URL", Some(&cfg.remote))?;
+    println!("Excluded from export: root .gitrepo");
+    for path in &cfg.exclude {
+        println!("Excluded local changes: {path:?}");
+    }
     println!(
-        "\nSource: {}\nScope: all committed changes in {subdir}\nUpstream: {upstream} ({base})\nTopic: {branch}\nPush destination: {remote}\nPublic message: {message}\nPreparation creates a local export commit; it does not push or commit the source checkout.",
+        "\nSource: {}\nScope: committed changes in {subdir}, respecting configured exclusions\nUpstream: {upstream} ({base})\nTopic: {branch}\nPush destination: {remote}\nPublic message: {message}\nPreparation creates a local export commit; it does not push or commit the source checkout.",
         ctx.repo_root.display()
     );
     if confirm("Prepare this contribution?")? {

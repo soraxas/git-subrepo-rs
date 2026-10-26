@@ -511,6 +511,8 @@ pub fn subrepo_branch(
     force: bool,
 ) -> Result<PathBuf> {
     let branch_name = format!("subrepo/{subref}");
+    let cfg =
+        crate::gitrepo::read_gitrepo(&ctx.repo_root.join(subdir).join(".gitrepo"), &ctx.repo_root)?;
 
     if let Some(colliding) = find_ref_collision(ctx, &branch_name) {
         resolve_ref_collision(ctx, &branch_name, &colliding)?;
@@ -561,6 +563,7 @@ pub fn subrepo_branch(
         }
     }
 
+    crate::exclusions::filter_branch(&ctx.repo_root, &branch_name, &cfg.commit, &cfg.exclude)?;
     let worktree = ctx.worktree_path(subdir);
     let (ok, err_out) = try_run_git(
         &["worktree", "add", &worktree.to_string_lossy(), &branch_name],
@@ -1349,6 +1352,7 @@ pub fn subrepo_commit(
         anyhow::bail!("Can't commit: '{subrepo_commit_ref}' doesn't contain upstream HEAD.");
     }
 
+    let import_tree = crate::exclusions::import_tree(&ctx.repo_root, subdir, subrepo_commit_ref)?;
     // Remove existing subdir from index
     let ls_out = run_git(&["ls-files", "-z", "--", subdir], &ctx.repo_root)?;
     if !ls_out.is_empty() {
@@ -1387,7 +1391,7 @@ pub fn subrepo_commit(
     // Read in the subrepo content
     let prefix = format!("{subdir}/");
     run_git(
-        &["read-tree", "--prefix", &prefix, "-u", subrepo_commit_ref],
+        &["read-tree", "--prefix", &prefix, "-u", &import_tree],
         &ctx.repo_root,
     )?;
 

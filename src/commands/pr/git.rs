@@ -1,52 +1,8 @@
 use crate::git_utils::{run_git, run_git_env, try_run_git};
 use anyhow::{Context as _, Result, ensure};
 use std::path::Path;
-use std::process::{Command, Stdio};
 
-/// Run Git with byte-preserving input/output for patches, including binary changes.
-pub(super) fn bytes(
-    cwd: &Path,
-    args: &[&str],
-    input: Option<&[u8]>,
-    index: Option<&Path>,
-) -> Result<Vec<u8>> {
-    let mut command = Command::new("git");
-    command
-        .current_dir(cwd)
-        .args(args)
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    if let Some(index) = index {
-        command.env("GIT_INDEX_FILE", index);
-    }
-    let mut child = command.spawn()?;
-    let mut stdin = child.stdin.take().context("Git stdin unavailable")?;
-    // Drain stdout/stderr concurrently with writing large binary patches.
-    let output = std::thread::scope(|scope| {
-        let writer = scope.spawn(move || -> std::io::Result<()> {
-            use std::io::Write;
-            if let Some(input) = input {
-                stdin.write_all(input)?;
-            }
-            Ok(())
-        });
-        let output = child.wait_with_output()?;
-        let wrote = writer.join().expect("Git input writer panicked");
-        if output.status.success() {
-            wrote?;
-        }
-        Ok::<_, std::io::Error>(output)
-    })?;
-    ensure!(
-        output.status.success(),
-        "{}\n{}",
-        String::from_utf8_lossy(&output.stderr).trim(),
-        String::from_utf8_lossy(&output.stdout).trim()
-    );
-    Ok(output.stdout)
-}
+pub(super) use crate::git_utils::run_git_bytes as bytes;
 
 /// Manipulate a temporary index without altering the checkout's real index.
 pub(super) fn index_git(cwd: &Path, index: &Path, args: &[&str]) -> Result<String> {

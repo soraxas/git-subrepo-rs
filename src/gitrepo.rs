@@ -18,6 +18,8 @@ pub struct GitrepoConfig {
     /// Optional URL of the original project, used by `workon` as the fetch/pull source
     /// (while `remote` stays the push destination, as it always has been).
     pub upstream: String,
+    /// Literal subtree-relative paths whose local changes must stay in the owner.
+    pub exclude: Vec<String>,
 }
 
 /// Read a .gitrepo file using git config.
@@ -32,6 +34,31 @@ pub fn read_gitrepo(path: &Path, repo_root: &Path) -> Result<GitrepoConfig> {
         out
     };
 
+    let output = std::process::Command::new("git")
+        .args([
+            "config",
+            "--null",
+            "--file",
+            &path_str,
+            "--get-all",
+            "subrepo.exclude",
+        ])
+        .current_dir(repo_root)
+        .output()?;
+    anyhow::ensure!(
+        output.status.success() || output.status.code() == Some(1),
+        "Cannot read exclusions: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let raw = String::from_utf8(output.stdout)?;
+    let exclude = raw
+        .split_terminator('\0')
+        .map(|path| {
+            crate::exclusions::validate(path)?;
+            Ok(path.to_owned())
+        })
+        .collect::<Result<Vec<_>>>()?;
+
     Ok(GitrepoConfig {
         remote: get("remote"),
         branch: get("branch"),
@@ -44,6 +71,7 @@ pub fn read_gitrepo(path: &Path, repo_root: &Path) -> Result<GitrepoConfig> {
         cmdver: get("cmdver"),
         verify: get("verify") == "true",
         upstream: get("upstream"),
+        exclude,
     })
 }
 

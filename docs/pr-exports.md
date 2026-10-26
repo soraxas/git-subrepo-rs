@@ -81,12 +81,53 @@ run `git cherry-pick --continue` there. The owning checkout is unchanged. For a
 non-conflict failure, inspect the underlying Git error before retrying; close
 the session and prepare again if no cherry-pick is in progress.
 
+## Persistent exclusions
+
+Store owner-only paths as repeated `exclude` entries in the source `.gitrepo`:
+
+```ini
+[subrepo]
+    exclude = LOCAL_PATCHES.md
+    exclude = docs/local-notes/
+```
+
+Paths are literal and relative to the subtree root. Files and whole directories
+are supported, including spaces and wildcard characters in their actual names.
+Absolute paths, traversal, `.git` components, empty values and pathspec magic
+are rejected. No glob or negation syntax is interpreted. Root `.gitrepo` is
+always omitted; nested metadata and similarly named vendor ledgers are retained.
+
+The guided preparation screen and normal `pr prepare` output display the
+configured exclusions. They also apply when using explicit `--path` selections;
+an exclusion wins if a path is both selected and excluded. Excluded local
+changes are replaced with their imported upstream baseline, or omitted if they
+did not exist upstream. This does not delete files already published upstream.
+If nothing exportable remains, preparation reports no changes.
+
+The session snapshots its policy; `pr status` lists it. Publication checks every
+outgoing commit against that session's upstream base and rejects changes to
+excluded paths, even if removed again before the tip. Changing the source policy
+does not change an existing session: close it and prepare again to use the new
+policy. Manual `git push` from an export bypasses these checks.
+
+Direct `git subrepo push` also filters excluded paths from every outgoing commit,
+including the first push after `init`. Existing upstream history is preserved.
+The owner's files remain intact. Pull/import retains the owner's committed
+excluded content and deletions; PR reconciliation preserves the union of its
+recorded exclusions and the owner's current policy. If an upstream change to
+an ancestor conflicts structurally with a retained path, resolve the structural
+conflict explicitly rather than removing local content.
+
+These settings apply to git-subrepo-rs exports, not ordinary pushes of the owning
+repository. Commit messages and other non-excluded files still need review.
+Other git-subrepo implementations may ignore this extension.
+
 ## Audit and publish
 
 Audit the full candidate against the recorded upstream base: behavior, public
 APIs, examples, dependencies, fixtures, documentation, licensing/attribution and
 every new commit's metadata and file content. Removed-at-tip content can still
-exist in earlier commits. The tool checks root `.gitrepo` in each outgoing commit
+exist in earlier commits. The tool checks root `.gitrepo` and configured exclusions in each outgoing commit
 and requires a linear public series; it is not a branding or secret scanner.
 
 Run the library's standalone checks in the candidate repository. Record the

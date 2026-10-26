@@ -563,6 +563,7 @@ fn stage_subrepo_content(
         anyhow::bail!("Commit ref '{subrepo_commit_ref}' does not exist.");
     }
 
+    let import_tree = crate::exclusions::import_tree(&ctx.repo_root, subdir, subrepo_commit_ref)?;
     // Remove existing subdir from index. `-f`: the working tree was already asserted
     // clean at the start of `pull`, so the only way `subdir` can have uncommitted
     // changes here is `.gitrepo` having just been rewritten by rebase-parent
@@ -576,7 +577,7 @@ fn stage_subrepo_content(
     // Read in the subrepo content
     let prefix = format!("{subdir}/");
     run_git(
-        &["read-tree", "--prefix", &prefix, "-u", subrepo_commit_ref],
+        &["read-tree", "--prefix", &prefix, "-u", &import_tree],
         &ctx.repo_root,
     )?;
 

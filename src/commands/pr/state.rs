@@ -63,6 +63,31 @@ impl Session {
         Ok(PathBuf::from(self.get("repository")?))
     }
 
+    /// Record the exclusion policy used to prepare this export, preserving literal values.
+    pub fn set_exclusions(&mut self, paths: &[String]) {
+        self.set("exclude-count", paths.len().to_string());
+        for (index, path) in paths.iter().enumerate() {
+            self.set(&format!("exclude-{index}"), path);
+        }
+    }
+
+    /// Read the prepared policy; older sessions have no configured exclusions.
+    pub fn exclusions(&self) -> Result<Vec<String>> {
+        let count: usize = self
+            .values
+            .get("exclude-count")
+            .map(String::as_str)
+            .unwrap_or("0")
+            .parse()?;
+        (0..count)
+            .map(|index| {
+                let path = self.get(&format!("exclude-{index}"))?;
+                crate::exclusions::validate(path)?;
+                Ok(path.to_owned())
+            })
+            .collect()
+    }
+
     pub fn save(&self) -> Result<()> {
         let temp = self.root.join("session.new");
         std::fs::write(&temp, "")?;

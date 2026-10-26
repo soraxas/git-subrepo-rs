@@ -2,6 +2,7 @@ mod cli;
 mod commands;
 mod encode;
 mod error;
+mod exclusions;
 mod git_utils;
 mod gitrepo;
 

@@ -1,5 +1,6 @@
+use anyhow::{Context as _, ensure};
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 #[allow(dead_code)]
 pub struct GitOutput {
@@ -160,4 +161,49 @@ pub fn commit_in_rev_list(commit: &str, list_head: &str, cwd: &Path) -> bool {
         return false;
     }
     out.lines().any(|line| line.starts_with(commit))
+}
+
+/// Run Git with byte-preserving input/output for patches, including binary changes.
+pub fn run_git_bytes(
+    cwd: &Path,
+    args: &[&str],
+    input: Option<&[u8]>,
+    index: Option<&Path>,
+) -> anyhow::Result<Vec<u8>> {
+    let mut command = Command::new("git");
+    command
+        .current_dir(cwd)
+        .args(args)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if let Some(index) = index {
+        command.env("GIT_INDEX_FILE", index);
+    }
+    let mut child = command.spawn()?;
+    let mut stdin = child.stdin.take().context("Git stdin unavailable")?;
+    // Drain stdout/stderr concurrently with writing large binary patches.
+    let output = std::thread::scope(|scope| {
+        let writer = scope.spawn(move || -> std::io::Result<()> {
+            use std::io::Write;
+            if let Some(input) = input {
+                stdin.write_all(input)?;
+            }
+            Ok(())
+        });
+        let output = child.wait_with_output()?;
+        let wrote = writer.join().expect("Git input writer panicked");
+        if output.status.success() {
+            wrote?;
+        }
+        Ok::<_, std::io::Error>(output)
+    })?;
+    ensure!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stderr).trim(),
+        String::from_utf8_lossy(&output.stdout).trim()
+    );
+    Ok(output.stdout)
 }
