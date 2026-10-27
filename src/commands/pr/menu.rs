@@ -1,5 +1,5 @@
 //! Guided PR actions using the same terminal widgets as the other subcommands.
-use super::{Context, discovery};
+use super::{Context, acceptance, discovery};
 use crate::commands::location;
 use crate::git_utils::run_git;
 use crate::gitrepo::read_gitrepo;
@@ -198,7 +198,9 @@ fn perform(
                         export.upstream,
                         export.owner.display()
                     );
-                    let merged = prompt("Merged commit SHA from the accepted upstream PR", None)?;
+                    let Some(merged) = accepted_commit(export)? else {
+                        return Ok(());
+                    };
                     if confirm("Stage this accepted contribution in its owning checkout?")? {
                         super::confirmed(export, subdir, "reconcile", &merged)?;
                     }
@@ -208,6 +210,28 @@ fn perform(
             }
         }
     }
+}
+
+fn accepted_commit(export: &discovery::Export) -> Result<Option<String>> {
+    println!("Looking for a merged PR matching the published export...");
+    match acceptance::merged_prs(export) {
+        Ok(prs) if !prs.is_empty() => {
+            let index = if prs.len() == 1 { 0 } else {
+                let labels: Vec<_> = prs.iter().map(|pr| format!("{} ({})", pr.url, pr.commit)).collect();
+                let Some(index) = choose("Select merged PR", &labels)? else { return Ok(None); };
+                index
+            };
+            let pr = &prs[index];
+            println!("Accepted PR: {}\nMerged commit: {}", pr.url.green(), pr.commit.cyan());
+            return Ok(Some(pr.commit.clone()));
+        }
+        Ok(_) => println!("{}", "No merged PR matching the published revision was found. Check whether the PR has been merged, or enter its accepted SHA manually.".yellow()),
+        Err(error) => println!("{}", format!("Automatic merged PR lookup unavailable: {error}").yellow()),
+    }
+    Ok(Some(prompt(
+        "Merged commit SHA from the accepted upstream PR",
+        None,
+    )?))
 }
 
 fn current_policy(ctx: &Context, subdir: &str) -> Option<Vec<String>> {

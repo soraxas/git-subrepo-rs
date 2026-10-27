@@ -388,6 +388,144 @@ fn merge_and_squash_roundtrips_keep_review_fixes_and_unexported_local_work() {
 }
 
 #[test]
+fn reconciliation_accepts_uncommitted_metadata_and_preserves_current_settings() {
+    for staged in [false, true] {
+        let f = Fixture::new();
+        f.edit("file", "public change\n");
+        let work = f.prepare("contribute/metadata", &[]);
+        std::fs::write(work.join("file"), "reviewed upstream change\n").unwrap();
+        git(&work, &["commit", "-qam", "Review fix"]);
+        f.publish(&work);
+        let merged = f.merge("contribute/metadata", false);
+        git(
+            &f.owner,
+            &[
+                "config",
+                "--file",
+                "lib/unit/.gitrepo",
+                "subrepo.exclude",
+                "LOCAL_PATCHES.md",
+            ],
+        );
+        if staged {
+            git(&f.owner, &["add", "lib/unit/.gitrepo"]);
+            // The working policy, rather than the staged policy, must survive.
+            git(
+                &f.owner,
+                &[
+                    "config",
+                    "--file",
+                    "lib/unit/.gitrepo",
+                    "--add",
+                    "subrepo.exclude",
+                    "local notes/",
+                ],
+            );
+        }
+        let before = git(&f.owner, &["rev-parse", "HEAD"]);
+        success(cli(
+            &f.owner,
+            &["pr", "reconcile", "lib/unit", "--merged", &merged],
+        ));
+        assert_eq!(git(&f.owner, &["rev-parse", "HEAD"]), before);
+        assert_eq!(
+            git(
+                &f.owner,
+                &["config", "--file", "lib/unit/.gitrepo", "subrepo.commit"]
+            ),
+            merged
+        );
+        let policy = git(
+            &f.owner,
+            &[
+                "config",
+                "--file",
+                "lib/unit/.gitrepo",
+                "--get-all",
+                "subrepo.exclude",
+            ],
+        );
+        assert_eq!(
+            policy,
+            if staged {
+                "LOCAL_PATCHES.md\nlocal notes/"
+            } else {
+                "LOCAL_PATCHES.md"
+            }
+        );
+        assert!(git(&f.owner, &["diff", "--", "lib/unit/.gitrepo"]).is_empty());
+        assert_eq!(
+            std::fs::read_to_string(f.owner.join("lib/unit/file")).unwrap(),
+            "reviewed upstream change\n"
+        );
+        assert_eq!(
+            git(&f.owner, &["diff", "--cached", "--name-only"]),
+            "lib/unit/.gitrepo\nlib/unit/file"
+        );
+    }
+}
+
+#[test]
+fn reconciliation_still_rejects_dirty_source_and_changed_sync_baselines() {
+    for path in [
+        "private",
+        "private-index",
+        "lib/unit/file",
+        "lib/unit/vendor/.gitrepo",
+        "lib/unit/.gitrepo",
+    ] {
+        let f = Fixture::new();
+        f.edit("file", "public change\n");
+        let work = f.prepare("contribute/guard", &[]);
+        f.publish(&work);
+        let merged = f.merge("contribute/guard", false);
+        git(
+            &f.owner,
+            &[
+                "config",
+                "--file",
+                "lib/unit/.gitrepo",
+                "subrepo.exclude",
+                "LOCAL_PATCHES.md",
+            ],
+        );
+        if path == "lib/unit/.gitrepo" {
+            git(
+                &f.owner,
+                &["config", "--file", path, "subrepo.commit", &merged],
+            );
+        } else {
+            let file = f.owner.join(if path == "private-index" {
+                "private"
+            } else {
+                path
+            });
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(&file, "uncommitted work\n").unwrap();
+            if path == "private-index" {
+                git(&f.owner, &["add", "private"]);
+                std::fs::write(file, "private application\n").unwrap();
+            }
+        }
+        let before = git(&f.owner, &["status", "--porcelain"]);
+        let metadata = std::fs::read(f.owner.join("lib/unit/.gitrepo")).unwrap();
+        let output = cli(
+            &f.owner,
+            &["pr", "reconcile", "lib/unit", "--merged", &merged],
+        );
+        assert!(!output.status.success(), "accepted dirty path {path}");
+        assert_eq!(git(&f.owner, &["status", "--porcelain"]), before);
+        assert_eq!(
+            std::fs::read(f.owner.join("lib/unit/.gitrepo")).unwrap(),
+            metadata
+        );
+        if path == "lib/unit/.gitrepo" {
+            assert!(String::from_utf8_lossy(&output.stderr).contains("sync baseline changed"));
+        }
+    }
+}
+
+#[test]
 fn prepare_refuses_base_branch_and_dirty_subtree() {
     let f = Fixture::new();
     f.edit("file", "changed\n");
@@ -708,6 +846,77 @@ fn literal_subrepo_path_does_not_remove_matching_sibling_files() {
             &["diff", "--cached", "--name-only", "--", "vendor/sibling"]
         ),
         ""
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn concurrent_metadata_settings_are_not_overwritten_during_reconciliation() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = Fixture::new();
+    f.edit("file", "exported\n");
+    let work = f.prepare("contribute/metadata-race", &[]);
+    f.publish(&work);
+    let merged = f.merge("contribute/metadata-race", false);
+    let before = git(
+        &f.owner,
+        &["config", "--file", "lib/unit/.gitrepo", "subrepo.commit"],
+    );
+    git(
+        &f.owner,
+        &[
+            "config",
+            "--file",
+            "lib/unit/.gitrepo",
+            "subrepo.exclude",
+            "initial/",
+        ],
+    );
+    let shim = f.temp.join("shim");
+    std::fs::create_dir(&shim).unwrap();
+    let script = shim.join("git");
+    std::fs::write(
+        &script,
+        r#"#!/bin/sh
+if [ "$1" = read-tree ] && [ "$2" = -m ] && [ "$3" = -u ]; then
+    "$PR_TEST_GIT" -C "$PR_TEST_OWNER" config --file lib/unit/.gitrepo subrepo.exclude concurrent/
+fi
+exec "$PR_TEST_GIT" "$@"
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let real_git = success(command("sh", &f.temp, &["-c", "command -v git"]));
+    let old_path = std::env::var_os("PATH").unwrap();
+    let path = std::env::join_paths(std::iter::once(shim).chain(std::env::split_paths(&old_path)))
+        .unwrap();
+    let output = invocation(
+        env!("CARGO_BIN_EXE_git-subrepo"),
+        &f.owner,
+        &["pr", "reconcile", "lib/unit", "--merged", &merged],
+    )
+    .env("PATH", path)
+    .env("PR_TEST_GIT", real_git)
+    .env("PR_TEST_OWNER", &f.owner)
+    .output()
+    .unwrap();
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("Root .gitrepo changed during checkout")
+    );
+    assert_eq!(
+        git(
+            &f.owner,
+            &["config", "--file", "lib/unit/.gitrepo", "subrepo.exclude"]
+        ),
+        "concurrent/"
+    );
+    assert_eq!(
+        git(
+            &f.owner,
+            &["config", "--file", "lib/unit/.gitrepo", "subrepo.commit"]
+        ),
+        before
     );
 }
 

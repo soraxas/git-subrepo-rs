@@ -48,8 +48,14 @@ defaults to no. Both the SHA and selected session/destination are checked before
 publication. Updating another session while confirmation is open cannot redirect
 the push. This publishes a branch; creating the GitHub PR is still a separate step.
 
-After acceptance, **Bring accepted upstream changes back** asks for the merged
-commit from the PR and stages reconciliation in its displayed owning checkout.
+After acceptance, **Bring accepted upstream changes back** looks up the merged
+PR using the optional GitHub CLI (`gh`). It matches the recorded upstream,
+base/topic branches and exact published head, then displays the PR URL and
+accepted commit for confirmation. Multiple matching PRs require a selection.
+Missing CLI/authentication, non-GitHub remotes or no matching merged PR leave
+manual SHA entry available. Lookup is read-only; the normal reconciliation
+checks still verify upstream reachability and accepted content before staging.
+After confirmation, it stages reconciliation in its displayed owning checkout.
 Review and commit that import separately. Closing or abandoning local tracking
 remains available through `pr close`; it retains the export and does not close
 a remote PR. Commands below remain available for automation and detailed control.
@@ -240,6 +246,14 @@ the selected accepted upstream URL/base branch and commit. The owner HEAD is
 unchanged until the user commits. Inspect and test before committing. The PR
 repository and local record are retained; a subsequent prepare is allowed after
 the staged import is committed. Start the next PR from that new sync baseline.
+
+Root `.gitrepo` settings may remain staged or unstaged before reconciliation.
+Their current working values are preserved while the accepted sync fields are
+updated and staged with the import. Source changes elsewhere in the checkout,
+untracked source in the subtree, unresolved metadata conflicts and a changed
+sync baseline still block reconciliation. Concurrent metadata edits are detected
+and retained instead of being overwritten. No preliminary settings commit is
+required.
 
 ## Verification contract
 

@@ -1,4 +1,4 @@
-use super::{candidate, git, state::Session};
+use super::{candidate, discovery, git, state::Session};
 use crate::cli::PrArgs;
 use crate::commands::Context;
 use crate::encode::encode_subdir;
@@ -27,15 +27,12 @@ pub(super) fn run(ctx: &Context, root: &Path, args: &PrArgs, quiet: bool) -> Res
         git::ancestor(owner, session.get("source")?, &ctx.original_head_commit),
         "Owning checkout no longer descends from the exported source revision"
     );
-    ensure!(
-        run_git(&["diff", "--name-only", "HEAD"], owner)?.is_empty(),
-        "Owning checkout has tracked/index changes; commit or reconcile them first"
-    );
     let subdir = args
         .subdir
         .as_deref()
         .context("reconcile requires <subdir>")?;
-    git::clean(owner, Some(subdir))?;
+    require_clean_owner(ctx, subdir)?;
+    let metadata_snapshot = MetadataSnapshot::read(owner, subdir)?;
     let cfg = read_gitrepo(&owner.join(subdir).join(".gitrepo"), owner)?;
     ensure!(
         cfg.commit == session.get("imported")?,
@@ -112,7 +109,14 @@ pub(super) fn run(ctx: &Context, root: &Path, args: &PrArgs, quiet: bool) -> Res
             .context("Git returned no reconciliation tree")?
             .to_owned()
     };
-    stage(ctx, &session, &merged_tree, merged, &cfg.method)?;
+    stage(
+        ctx,
+        &session,
+        &merged_tree,
+        merged,
+        &cfg.method,
+        &metadata_snapshot,
+    )?;
     session.set("phase", "staged");
     session.set("accepted", merged);
     session.set("integration-tree", &merged_tree);
@@ -124,6 +128,61 @@ pub(super) fn run(ctx: &Context, root: &Path, args: &PrArgs, quiet: bool) -> Res
         );
     }
     Ok(())
+}
+
+#[derive(PartialEq)]
+struct MetadataSnapshot {
+    contents: Vec<u8>,
+    index_entry: String,
+}
+
+impl MetadataSnapshot {
+    fn read(owner: &Path, subdir: &str) -> Result<Self> {
+        ensure!(
+            run_git(
+                &[
+                    "ls-files",
+                    "--unmerged",
+                    "--",
+                    &format!(":(literal){subdir}/.gitrepo")
+                ],
+                owner
+            )?
+            .is_empty(),
+            "Resolve root .gitrepo merge conflicts before reconciliation"
+        );
+        Ok(Self {
+            contents: std::fs::read(owner.join(subdir).join(".gitrepo"))?,
+            index_entry: run_git(
+                &[
+                    "ls-files",
+                    "--stage",
+                    "--",
+                    &format!(":(literal){subdir}/.gitrepo"),
+                ],
+                owner,
+            )?,
+        })
+    }
+}
+
+fn require_clean_owner(ctx: &Context, subdir: &str) -> Result<()> {
+    let changes = run_git(
+        &[
+            "status",
+            "--porcelain",
+            "--untracked-files=no",
+            "--",
+            ".",
+            &format!(":(exclude,literal){subdir}/.gitrepo"),
+        ],
+        &ctx.repo_root,
+    )?;
+    ensure!(
+        changes.is_empty(),
+        "Owning checkout has tracked/index changes outside the root .gitrepo:\n{changes}\nCommit or reconcile those source changes first"
+    );
+    discovery::require_committed_source(ctx, subdir)
 }
 
 fn begin_resolution(
@@ -208,7 +267,14 @@ fn resolved_tree(session: &Session) -> Result<String> {
     Ok(tree)
 }
 
-fn stage(ctx: &Context, session: &Session, tree: &str, accepted: &str, method: &str) -> Result<()> {
+fn stage(
+    ctx: &Context,
+    session: &Session,
+    tree: &str,
+    accepted: &str,
+    method: &str,
+    snapshot: &MetadataSnapshot,
+) -> Result<()> {
     let owner = &ctx.repo_root;
     let subdir = session.get("subdir")?;
     let index = session.root.join("stage-index");
@@ -231,7 +297,7 @@ fn stage(ctx: &Context, session: &Session, tree: &str, accepted: &str, method: &
         &["read-tree", &format!("--prefix={subdir}/"), tree],
     )?;
     let metadata = session.root.join("accepted.gitrepo");
-    std::fs::copy(owner.join(subdir).join(".gitrepo"), &metadata)?;
+    std::fs::write(&metadata, &snapshot.contents)?;
     update_gitrepo(
         &metadata,
         Some(session.get("upstream")?),
@@ -243,6 +309,15 @@ fn stage(ctx: &Context, session: &Session, tree: &str, accepted: &str, method: &
         owner,
     )?;
     let blob = run_git(&["hash-object", "-w", &metadata.to_string_lossy()], owner)?;
+    // Leave metadata out of the source checkout transaction. Its local staged
+    // and working contents may differ; Git must not overwrite them as source.
+    let previous_blob = run_git(
+        &[
+            "rev-parse",
+            &format!("{}:{subdir}/.gitrepo", ctx.original_head_commit),
+        ],
+        owner,
+    )?;
     git::index_git(
         owner,
         &index,
@@ -250,21 +325,21 @@ fn stage(ctx: &Context, session: &Session, tree: &str, accepted: &str, method: &
             "update-index",
             "--add",
             "--cacheinfo",
-            &format!("100644,{blob},{subdir}/.gitrepo"),
+            &format!("100644,{previous_blob},{subdir}/.gitrepo"),
         ],
     )?;
-    let full_tree = git::index_git(owner, &index, &["write-tree"])?;
+    let checkout_tree = git::index_git(owner, &index, &["write-tree"])?;
     ensure!(
         git::head(owner)? == ctx.original_head_commit,
         "Owning HEAD changed during reconciliation"
     );
+    require_clean_owner(ctx, subdir)?;
     ensure!(
-        run_git(&["diff", "--name-only", "HEAD"], owner)?.is_empty(),
-        "Owning checkout changed during reconciliation"
+        MetadataSnapshot::read(owner, subdir)? == *snapshot,
+        "Root .gitrepo changed during reconciliation; retry with its current settings"
     );
-    git::clean(owner, Some(subdir))?;
     // Git checks for conflicting local/untracked files before updating the real
-    // index and working tree. Nothing outside the subtree differs in full_tree.
+    // index and working tree. Nothing outside the subtree differs in checkout_tree.
     // Anchor the old tree: a concurrent commit outside the subtree must not
     // become a moving baseline whose changes this update would reverse.
     run_git(
@@ -273,7 +348,23 @@ fn stage(ctx: &Context, session: &Session, tree: &str, accepted: &str, method: &
             "-m",
             "-u",
             &ctx.original_head_commit,
-            &full_tree,
+            &checkout_tree,
+        ],
+        owner,
+    )?;
+    // Source checkout succeeded without touching local metadata. Stage the
+    // accepted baseline together with the snapshotted working-copy settings.
+    ensure!(
+        MetadataSnapshot::read(owner, subdir)? == *snapshot,
+        "Root .gitrepo changed during checkout; local metadata was preserved. Review the staged source import before continuing"
+    );
+    std::fs::copy(&metadata, owner.join(subdir).join(".gitrepo"))?;
+    run_git(
+        &[
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            &format!("100644,{blob},{subdir}/.gitrepo"),
         ],
         owner,
     )?;

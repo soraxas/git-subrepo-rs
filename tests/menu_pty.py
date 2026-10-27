@@ -2,6 +2,7 @@
 import errno
 from datetime import datetime, timezone
 import fcntl
+import json
 import os
 from pathlib import Path
 import pty
@@ -304,6 +305,92 @@ class GuidedMenu(unittest.TestCase):
         self.choose(terminal, "Quit")
         self.assertEqual(terminal.wait(), 0)
         self.assertEqual(session.read_bytes(), before)
+
+    def github_lookup_fixture(self, fail=False):
+        export = self.prepare()
+        head = self.git(export, "rev-parse", "HEAD")
+        self.cli(self.owner, "pr", "publish", "lib/unit", "--expected-head", head)
+        session = export.parents[2] / "session"
+        self.git(self.owner, "config", "--file", str(session), "export.upstream", "https://github.com/test/library.git")
+        shim = self.root / "bin"
+        shim.mkdir()
+        gh = shim / "gh"
+        gh.write_text("#!/usr/bin/env python3\nimport json, os, sys\n"
+                      "open(os.environ['LOOKUP_ARGS'], 'w').write(json.dumps(sys.argv[1:]))\n"
+                      + ("sys.stderr.write('test authentication unavailable\\n')\nsys.exit(1)\n" if fail else
+                         "print(os.environ['LOOKUP_ROWS'])\n"))
+        gh.chmod(0o755)
+        self.env['PATH'] = str(shim) + os.pathsep + self.env['PATH']
+        self.env['LOOKUP_ARGS'] = str(self.root / "lookup-args.json")
+        accepted = "a" * 40
+        self.env['LOOKUP_ROWS'] = ("https://github.com/test/library/pull/1\t" + "0" * 40 + "\t" + "b" * 40 + "\n"
+                                   + "https://github.com/test/library/pull/2\t" + head + "\t" + accepted)
+        return session, accepted
+
+    def test_reconciliation_discovers_matching_merged_pr_without_manual_sha(self):
+        session, accepted = self.github_lookup_fixture()
+        before = session.read_bytes()
+        terminal = self.terminal(self.owner)
+        self.choose(terminal, "Bring accepted upstream changes back")
+        terminal.expect("Accepted PR: https://github.com/test/library/pull/2")
+        terminal.expect("Merged commit: " + accepted)
+        terminal.expect("Stage this accepted contribution in its owning checkout?")
+        terminal.send("\n")
+        self.choose(terminal, "Quit")
+        self.assertEqual(terminal.wait(), 0)
+        self.assertNotIn("Merged commit SHA from the accepted upstream PR", terminal.output)
+        self.assertEqual(session.read_bytes(), before)
+        args = json.loads((self.root / "lookup-args.json").read_text())
+        for flag, value in [("--repo", "test/library"), ("--state", "merged"),
+                            ("--base", "main"), ("--head", "contribute/existing")]:
+            self.assertEqual(args[args.index(flag) + 1], value)
+
+    def test_reconciliation_lookup_failure_keeps_manual_sha_fallback(self):
+        session, accepted = self.github_lookup_fixture(fail=True)
+        before = session.read_bytes()
+        terminal = self.terminal(self.owner)
+        self.choose(terminal, "Bring accepted upstream changes back")
+        terminal.expect("Automatic merged PR lookup unavailable")
+        terminal.expect("test authentication unavailable")
+        terminal.expect("Merged commit SHA from the accepted upstream PR")
+        terminal.send(accepted + "\n")
+        terminal.expect("Stage this accepted contribution in its owning checkout?")
+        terminal.send("\n")
+        self.choose(terminal, "Quit")
+        self.assertEqual(terminal.wait(), 0)
+        self.assertEqual(session.read_bytes(), before)
+
+    def test_multiple_matching_merged_prs_require_a_selection(self):
+        session, _ = self.github_lookup_fixture()
+        head = self.cli(self.owner, "pr", "status", "lib/unit").split("published: ", 1)[1].splitlines()[0]
+        accepted = "c" * 40
+        self.env['LOOKUP_ROWS'] += "\nhttps://github.com/test/library/pull/3\t" + head + "\t" + accepted
+        before = session.read_bytes()
+        terminal = self.terminal(self.owner)
+        self.choose(terminal, "Bring accepted upstream changes back")
+        terminal.expect("Select merged PR")
+        terminal.expect("Quit / back")
+        terminal.send("\x1b[B\r")
+        terminal.expect("Accepted PR: https://github.com/test/library/pull/3")
+        terminal.expect("Merged commit: " + accepted)
+        terminal.expect("Stage this accepted contribution in its owning checkout?")
+        terminal.send("\n")
+        self.choose(terminal, "Quit")
+        self.assertEqual(terminal.wait(), 0)
+        self.assertEqual(session.read_bytes(), before)
+
+    def test_no_matching_merged_pr_keeps_manual_fallback(self):
+        _, accepted = self.github_lookup_fixture()
+        self.env['LOOKUP_ROWS'] = ""
+        terminal = self.terminal(self.owner)
+        self.choose(terminal, "Bring accepted upstream changes back")
+        terminal.expect("No merged PR matching the published revision was found")
+        terminal.expect("Merged commit SHA from the accepted upstream PR")
+        terminal.send(accepted + "\n")
+        terminal.expect("Stage this accepted contribution in its owning checkout?")
+        terminal.send("\n")
+        self.choose(terminal, "Quit")
+        self.assertEqual(terminal.wait(), 0)
 
     def test_legacy_export_date_and_policy_mismatch_are_visible_from_sibling(self):
         export = self.prepare()

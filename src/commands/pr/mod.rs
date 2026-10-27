@@ -1,4 +1,5 @@
 //! Explicit PR sessions: preparation/publication are separate from accepted upstream sync.
+mod acceptance;
 pub(crate) mod discovery;
 mod git;
 mod menu;
@@ -86,7 +87,8 @@ pub(crate) fn confirmed(
             && session.get("remote")? == export.remote
             && session.get("upstream")? == export.upstream
             && session.get("base")? == export.base
-            && session.get("base-branch")? == export.base_branch,
+            && session.get("base-branch")? == export.base_branch
+            && session.optional("published") == export.published,
         "Export session changed while confirming. Review the current session and its destination before continuing."
     );
     let args = PrArgs {
