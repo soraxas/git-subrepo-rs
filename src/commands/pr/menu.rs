@@ -4,6 +4,7 @@ use crate::commands::location;
 use crate::git_utils::run_git;
 use crate::gitrepo::read_gitrepo;
 use anyhow::{Result, ensure};
+use colored::Colorize;
 use dialoguer::{Confirm, Input, Select, theme::ColorfulTheme};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -48,7 +49,7 @@ pub fn run() -> Result<()> {
     } else if subrepos.len() == 1 {
         subrepos[0].clone()
     } else {
-        println!("\nChoose a subrepo in {}", root.display());
+        println!("\n{} {}", "Choose a subrepo in".bold(), root.display());
         let Some(index) = choose("Select subrepo", &subrepos)? else {
             return Ok(());
         };
@@ -60,26 +61,44 @@ pub fn run() -> Result<()> {
         let exports = discovery::exports(&ctx, &subdir)?;
         let changes = discovery::source_changes(&ctx, &subdir)?;
         println!(
-            "\n{subdir}\nCurrent checkout: {} ({})\nLocal changes: {}",
+            "\n{}\n{} {} ({})\n{} {}",
+            subdir.cyan().bold(),
+            "Current checkout:".bold(),
             root.display(),
-            ctx.original_head_branch,
+            ctx.original_head_branch.cyan(),
+            "Local changes:".bold(),
             if changes.is_empty() {
-                "committed"
+                "committed".green()
             } else {
-                "uncommitted"
+                "uncommitted".yellow()
             }
         );
         println!(
-            "Workflow: commit source/config -> prepare -> review/test -> publish -> upstream acceptance -> reconcile"
+            "{}",
+            "Workflow: commit source/config -> prepare -> review/test -> publish -> upstream acceptance -> reconcile".dimmed()
         );
-        println!("Current source: {}", ctx.original_head_commit);
+        println!(
+            "{} {}",
+            "Current source:".bold(),
+            ctx.original_head_commit.cyan()
+        );
         let policy = current_policy(&ctx, &subdir);
-        println!("Root .gitrepo is always omitted from exports.");
+        println!(
+            "{}",
+            "Root .gitrepo is always omitted from exports.".dimmed()
+        );
         for export in &exports {
+            let status = export_status(export)?;
+            let status = match status {
+                "published" => status.green(),
+                "checkout missing" | "import needs conflict resolution" => status.red(),
+                _ => status.yellow(),
+            };
             println!(
-                "Existing export: {} [{}]",
-                export.branch,
-                export_status(export)?,
+                "{} {} [{}]",
+                "Existing export:".bold(),
+                export.branch.cyan().bold(),
+                status,
             );
             show_export(export, policy.as_deref());
         }
@@ -108,7 +127,7 @@ pub fn run() -> Result<()> {
         };
         // A recoverable operation error returns to the menu with the context intact.
         if let Err(error) = perform(actions[index].0, &ctx, &subdir, &exports) {
-            eprintln!("git-subrepo: {error}");
+            eprintln!("{} {error}", "git-subrepo:".red().bold());
         }
     }
 }
@@ -143,8 +162,9 @@ fn perform(
                 return Ok(());
             };
             println!(
-                "\nExport: {}\nOwner: {}\nRepository: {}",
-                export.branch,
+                "\n{} {}\nOwner: {}\nRepository: {}",
+                "Export:".bold(),
+                export.branch.cyan().bold(),
                 export.owner.display(),
                 export.repository.display()
             );
@@ -189,11 +209,18 @@ fn perform(
 fn current_policy(ctx: &Context, subdir: &str) -> Option<Vec<String>> {
     match read_gitrepo(&ctx.repo_root.join(subdir).join(".gitrepo"), &ctx.repo_root) {
         Ok(config) => {
-            println!("Current exclusions: {}", display_paths(&config.exclude));
+            println!(
+                "{} {}",
+                "Current exclusions:".bold(),
+                display_paths(&config.exclude)
+            );
             Some(config.exclude)
         }
         Err(error) => {
-            println!("Current exclusions: unavailable ({error})");
+            println!(
+                "{}",
+                format!("Current exclusions: unavailable ({error})").yellow()
+            );
             None
         }
     }
@@ -213,39 +240,46 @@ fn display_paths(paths: &[String]) -> String {
 
 fn show_export(export: &discovery::Export, current_policy: Option<&[String]>) {
     println!(
-        "  Created: {}\n  Source: {}{}\n  Owner: {}\n  Upstream: {} ({})\n  Destination: {} ({})",
-        export.created_at,
-        &export.source[..export.source.len().min(12)],
+        "  {} {}\n  {} {}{}\n  {} {}\n  {} {} ({})\n  {} {} ({})",
+        "Created:".bold(),
+        export.created_at.cyan(),
+        "Source:".bold(),
+        export.source[..export.source.len().min(12)].cyan(),
         if export.source_branch.is_empty() {
             String::new()
         } else {
             format!(" ({})", export.source_branch)
         },
+        "Owner:".bold(),
         export.owner.display(),
+        "Upstream:".bold(),
         export.upstream,
         export.base_branch,
+        "Destination:".bold(),
         export.remote,
         export.branch
     );
     println!(
-        "  Recorded exclusions: {}",
+        "  {} {}",
+        "Recorded exclusions:".bold(),
         if export.policy_recorded {
-            display_paths(&export.exclusions)
+            display_paths(&export.exclusions).normal()
         } else {
-            "not recorded (older export)".to_owned()
+            "not recorded (older export)".yellow()
         }
     );
     if export.published.is_empty() {
-        println!("  Published: not yet");
+        println!("  {} {}", "Published:".bold(), "not yet".yellow());
     } else {
         println!(
-            "  Published: {} ({})",
+            "  {} {} ({})",
+            "Published:".bold(),
             if export.published_at.is_empty() {
-                "date not recorded"
+                "date not recorded".yellow()
             } else {
-                &export.published_at
+                export.published_at.green()
             },
-            &export.published[..export.published.len().min(12)]
+            export.published[..export.published.len().min(12)].cyan()
         );
     }
     if let Some(current) = current_policy {
@@ -257,12 +291,16 @@ fn show_export(export: &discovery::Export, current_policy: Option<&[String]>) {
         };
         if normalized(current) != normalized(&export.exclusions) {
             println!(
-                "  Exclusions differ from this checkout; this export keeps its recorded policy."
+                "  {}",
+                "Exclusions differ from this checkout; this export keeps its recorded policy."
+                    .yellow()
+                    .bold()
             );
         }
     }
     println!(
-        "  Opening resumes this snapshot. To use new source/settings, close its session and prepare again."
+        "  {}",
+        "Opening resumes this snapshot. To use new source/settings, close its session and prepare again.".dimmed()
     );
 }
 

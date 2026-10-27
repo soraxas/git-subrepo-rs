@@ -21,6 +21,10 @@ do not change a retained export. Commit the intended source/configuration, close
 the old session with `git subrepo pr close <subdir>`, then prepare again from
 that checkout to create a new snapshot. Preserve any review fixes first.
 
+Terminal colours highlight headings/revisions in cyan, published/clean states
+in green and warnings in yellow; missing checkouts or import conflicts use red.
+Set `NO_COLOR=1` for plain text. Labels also describe each state without colour.
+
 Older exports recover their creation date from their timestamp-based session
 ID, labelled as such; unrecognized IDs show an unknown date. Missing publication
 dates and source branch names remain unknown. Viewing the menu or status never
