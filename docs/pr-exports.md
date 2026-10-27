@@ -17,7 +17,7 @@ The menu shows the workflow and each export's creation time in UTC, source
 revision/branch, recorded exclusion policy, owner, destinations and last
 publication time. It compares the saved policy with the current checkout's
 settings, including uncommitted settings, and flags differences. Those settings
-do not change a retained export. Commit the intended source/configuration, close
+do not change a retained export. Commit the intended source files, close
 the old session with `git subrepo pr close <subdir>`, then prepare again from
 that checkout to create a new snapshot. Preserve any review fixes first.
 
@@ -33,9 +33,14 @@ when the tool published a new revision, rather than the source commit's date.
 
 **Prepare new contribution** prompts for an editable topic, public message,
 upstream/base and push destination. It exports committed source only. If the
-current subtree is dirty, the menu shows the changed files and existing exports;
-review/commit the intended source changes explicitly, or resume an existing
+current subtree has uncommitted source files, the menu shows the changed files
+and existing exports; review/commit the intended source changes explicitly, or resume an existing
 export. It does not silently stash, commit, or switch to another source checkout.
+The root `.gitrepo` is local export configuration: its staged or unstaged changes
+do not block preparation. Preparation reads its current working copy and records
+the exclusions used in the session, without staging or committing that file.
+Nested `.gitrepo` files are source and still require a commit. A pending staged
+reconciliation must still be committed before starting the next contribution.
 
 **Publish reviewed export** displays the candidate history and diff, destination
 and revision. Confirm only after reviewing and testing that revision; confirmation

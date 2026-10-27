@@ -103,21 +103,22 @@ pub(crate) fn export_owner(repository: &Path) -> Result<Option<(PathBuf, String)
 
 /// Show changed source files without treating literal subrepo names as patterns.
 pub(crate) fn source_changes(ctx: &Context, subdir: &str) -> Result<String> {
-    run_git(
-        &[
-            "status",
-            "--short",
-            "--untracked-files=all",
-            "--",
-            &format!(":(literal){subdir}"),
-        ],
-        &ctx.repo_root,
-    )
+    changed_paths(ctx, subdir, false)
 }
 
-/// Explain a dirty export source and point to existing work without modifying it.
+fn changed_paths(ctx: &Context, subdir: &str, exclude_metadata: bool) -> Result<String> {
+    let subtree = format!(":(literal){subdir}");
+    let metadata = format!(":(exclude,literal){subdir}/.gitrepo");
+    let mut args = vec!["status", "--short", "--untracked-files=all", "--", &subtree];
+    if exclude_metadata {
+        args.push(&metadata);
+    }
+    run_git(&args, &ctx.repo_root)
+}
+
+/// Require committed source while allowing current root `.gitrepo` export settings.
 pub(crate) fn require_committed_source(ctx: &Context, subdir: &str) -> Result<()> {
-    let changes = source_changes(ctx, subdir)?;
+    let changes = changed_paths(ctx, subdir, true)?;
     if changes.is_empty() {
         return Ok(());
     }
@@ -127,7 +128,7 @@ pub(crate) fn require_committed_source(ctx: &Context, subdir: &str) -> Result<()
     );
     for export in exports(ctx, subdir)? {
         message.push_str(&format!(
-            "\n\nExisting export: {}\nOwner: {}\nRepository: {}\nRun 'git subrepo pr' in this checkout to open it; no new preparation is needed.",
+            "\n\nExisting export: {}\nOwner: {}\nRepository: {}\nRun 'git subrepo pr' to resume this saved export. Prepare a new contribution to use different source or settings.",
             export.branch, export.owner.display(), export.repository.display()
         ));
     }

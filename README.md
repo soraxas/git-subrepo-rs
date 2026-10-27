@@ -62,8 +62,10 @@ worktrees, so uncommitted source changes do not prevent resuming review work
 prepared from another checkout. Every export shows its owning checkout, creation
 time in UTC, source revision/branch, recorded exclusions and publication time.
 The menu flags exclusions that differ from the current checkout. Opening resumes
-the saved snapshot; new source or settings require closing that session and
-preparing again. Closing retains the export repository and remote branch.
+the saved snapshot; new source or settings require preparing a new export.
+Source files must be committed; root `.gitrepo` settings may remain uncommitted
+and are recorded in the export. Close an active session in the same checkout
+before replacing it. Closing retains the export repository and remote branch.
 
 Opening an export starts your shell there; type `exit` to return to
 the menu. Preparation prompts for a topic, public message and destinations.

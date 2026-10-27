@@ -75,7 +75,7 @@ pub fn run() -> Result<()> {
         );
         println!(
             "{}",
-            "Workflow: commit source/config -> prepare -> review/test -> publish -> upstream acceptance -> reconcile".dimmed()
+            "Workflow: commit source -> prepare -> review/test -> publish -> upstream acceptance -> reconcile".dimmed()
         );
         println!(
             "{} {}",
@@ -86,6 +86,10 @@ pub fn run() -> Result<()> {
         println!(
             "{}",
             "Root .gitrepo is always omitted from exports.".dimmed()
+        );
+        println!(
+            "{}",
+            "Preparation uses current .gitrepo settings, which can remain uncommitted.".dimmed()
         );
         for export in &exports {
             let status = export_status(export)?;

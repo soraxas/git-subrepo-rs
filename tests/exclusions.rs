@@ -128,6 +128,69 @@ impl Drop for Fixture {
 }
 
 #[test]
+fn prepare_uses_uncommitted_exclusions_without_committing_or_changing_the_checkout() {
+    for staged in [false, true] {
+        let f = Fixture::new();
+        f.write("file", "public improvement\n");
+        f.write("local-only.txt", "owner-only notes\n");
+        f.commit();
+        f.exclude("local-only.txt");
+        if staged {
+            git(&f.owner, &["add", "lib/unit/.gitrepo"]);
+        }
+        let before = git(&f.owner, &["rev-parse", "HEAD"]);
+        let status = git(&f.owner, &["status", "--porcelain"]);
+        let index = git(&f.owner, &["ls-files", "--stage"]);
+        let metadata = std::fs::read(f.owner.join("lib/unit/.gitrepo")).unwrap();
+        let work = f.prepare(&[]);
+        assert!(!work.join("local-only.txt").exists());
+        assert!(!work.join(".gitrepo").exists());
+        assert_eq!(
+            std::fs::read_to_string(work.join("file")).unwrap(),
+            "public improvement\n"
+        );
+        let session = success(cli(&f.owner, &["pr", "status", "lib/unit"]));
+        assert!(session.contains("exclude-0: local-only.txt"), "{session}");
+        assert_eq!(git(&f.owner, &["rev-parse", "HEAD"]), before);
+        assert_eq!(git(&f.owner, &["status", "--porcelain"]), status);
+        assert_eq!(git(&f.owner, &["ls-files", "--stage"]), index);
+        assert_eq!(
+            std::fs::read(f.owner.join("lib/unit/.gitrepo")).unwrap(),
+            metadata
+        );
+    }
+}
+
+#[test]
+fn uncommitted_nested_metadata_and_similarly_named_files_still_block_preparation() {
+    for path in ["vendor/.gitrepo", ".gitrepo.notes"] {
+        let f = Fixture::new();
+        f.write("file", "public improvement\n");
+        f.commit();
+        f.exclude("LOCAL_PATCHES.md");
+        f.write(path, "uncommitted source\n");
+        let output = cli(
+            &f.owner,
+            &[
+                "pr",
+                "prepare",
+                "lib/unit",
+                "--branch",
+                "topic",
+                "--message",
+                "Public",
+            ],
+        );
+        assert!(!output.status.success());
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            error.contains("Uncommitted") && error.contains(path),
+            "{error}"
+        );
+    }
+}
+
+#[test]
 fn configured_exclusions_preserve_upstream_baseline_and_literal_directory_scope() {
     let f = Fixture::new();
     for path in ["LOCAL_PATCHES.md", "local notes/", "literal[1]"] {
