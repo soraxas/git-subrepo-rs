@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Fetch the bash+ and Test::More libraries that test/setup sources into ext/.
+# test/setup puts every lib/ and bin/ under the repo on PATH, so ext/ is enough.
+
+set -euo pipefail
+
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
+
+fetch() {
+  local name=$1 rev=$2 dir=ext/$1
+  if [[ ! -d $dir/.git ]]; then
+    git clone --quiet "https://github.com/ingydotnet/$name" "$dir"
+  fi
+  git -C "$dir" -c advice.detachedHead=false checkout --quiet "$rev"
+}
+
+fetch bashplus 030d196bf621e971e223e95e73c235e6992b85e0
+fetch test-more-bash c7df24fcb0814fbb62a33d92dc3c8d526ff710f0

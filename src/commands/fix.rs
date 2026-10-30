@@ -163,7 +163,7 @@ fn apply_fix(ctx: &Context, subdir: &str, issue: &Issue) -> Result<()> {
             eprintln!(
                 "  {} Set parent = {} in {subdir}/.gitrepo",
                 "✓".green().bold(),
-                &c[..c.len().min(7)].green()
+                c[..c.len().min(7)].green()
             );
         }
         Issue::StaleRef { ref_name } => {

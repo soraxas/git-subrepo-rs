@@ -84,6 +84,10 @@ fn optional_target(root: &Path, cwd: &Path, value: &mut Option<String>, all: boo
 }
 
 fn remote(root: &Path, cwd: &Path, value: &mut Option<String>) -> Result<()> {
+    // At the root a relative path already means the same thing; keep it portable in .gitrepo.
+    if cwd == root {
+        return Ok(());
+    }
     if let Some(value) = value {
         let named = try_run_git(&["remote", "get-url", value], root).0;
         if !named && cwd.join(&*value).exists() {

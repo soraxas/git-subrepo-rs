@@ -58,8 +58,8 @@ clone-foo-and-bar
       cd "$OWNER/bar"
       catch git subrepo pull /home/user/bar/foo
     )" \
-    "git-subrepo: The subdir '.*/home/user/bar/foo' should not be absolute path." \
-    "Error OK: check subdir is not absolute path"
+    "git-subrepo: Subrepo path is outside the selected checkout: .*/home/user/bar/foo" \
+    "Error OK: check subdir is inside the checkout"
 }
 
 {
@@ -141,11 +141,11 @@ clone-foo-and-bar
 
 {
   like "$(
-      cd src
+      cd "$TEST_HOME"
       catch git subrepo status
     )" \
-    "git-subrepo: (Need to run subrepo command from top level directory of the repo\.|Not inside a git repository\.)" \
-    "Error OK: check cwd is at top level"
+    "git-subrepo: Not inside a git repository\." \
+    "Error OK: check cwd is inside a git repository"
 }
 
 {

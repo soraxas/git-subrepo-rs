@@ -238,6 +238,7 @@ mixed, edge cases). This keeps the integration tests lean.
 
 These use the `prove` TAP runner with `Test::More` from bash+.
 Tests call `git subrepo <command>` which invokes the compiled Rust binary.
+Fetch bash+ and Test::More into the gitignored `ext/` once with `test/install-deps`.
 
 ### Build before testing
 

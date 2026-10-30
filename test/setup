@@ -7,7 +7,8 @@ set -e
 # global git configuration
 
 # Set up a temporary home directory for git config
-TEST_HOME=$(mktemp -d)
+# Resolve symlinks (macOS /var -> /private/var) so paths match what git-subrepo records
+TEST_HOME=$(cd "$(mktemp -d)" && pwd -P)
 export HOME="$TEST_HOME"
 TEMP_GIT_CONFIG="$TEST_HOME/.gitconfig"
 export GIT_CONFIG_GLOBAL="$TEMP_GIT_CONFIG"

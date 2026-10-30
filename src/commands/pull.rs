@@ -169,10 +169,12 @@ pub fn prepare(
                  Resolve conflicts in the worktree, then run:\n\
                  \x1b[1;36m  cd '{}'\x1b[0m\n\
                  \x1b[1;36m  # fix conflicts, then: git rebase --continue\x1b[0m\n\
-                 \x1b[1;36m  git subrepo commit {}\x1b[0m",
+                 \x1b[1;36m  git subrepo commit {}\x1b[0m\n\n\
+                 'commit' can run from the worktree; it imports into '{}'.",
                 out.replace('\n', "\n  "),
                 worktree_display,
                 subdir,
+                ctx.repo_root.display(),
             );
         }
     } else {
@@ -185,10 +187,12 @@ pub fn prepare(
                  \x1b[1;36m  cd '{}'\x1b[0m\n\
                  \x1b[1;36m  # fix conflicts, stage them, then:\x1b[0m\n\
                  \x1b[1;36m  git merge --continue\x1b[0m\n\
-                 \x1b[1;36m  git subrepo commit {}\x1b[0m",
+                 \x1b[1;36m  git subrepo commit {}\x1b[0m\n\n\
+                 'commit' can run from the worktree; it imports into '{}'.",
                 out.replace('\n', "\n  "),
                 worktree_display,
                 subdir,
+                ctx.repo_root.display(),
             );
         }
     }
@@ -372,63 +376,6 @@ pub(crate) fn parse_other_staged_roots(output: &str, current_subdir: &str) -> Ve
         }
     }
     roots.into_iter().collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::parse_other_staged_roots;
-
-    #[test]
-    fn no_staged_files_returns_empty() {
-        assert!(parse_other_staged_roots("", "echo360").is_empty());
-        assert!(parse_other_staged_roots("   \n  \n", "echo360").is_empty());
-    }
-
-    #[test]
-    fn only_current_subrepo_staged_returns_empty() {
-        let output = "echo360/.gitrepo\necho360/README.md\necho360/src/main.rs\n";
-        assert!(parse_other_staged_roots(output, "echo360").is_empty());
-    }
-
-    #[test]
-    fn other_subrepos_detected() {
-        let output = "ooo/.gitrepo\nooo/README.md\ndimensify/Cargo.toml\ndimensify/.gitrepo\necho360/src/main.rs\n";
-        let mut result = parse_other_staged_roots(output, "echo360");
-        result.sort();
-        assert_eq!(result, vec!["dimensify", "ooo"]);
-    }
-
-    #[test]
-    fn mix_current_and_others() {
-        let output = "foo/.gitrepo\nfoo/a.rs\nbar/.gitrepo\nbar/b.rs\nbaz/c.rs\n";
-        let mut result = parse_other_staged_roots(output, "foo");
-        result.sort();
-        assert_eq!(result, vec!["bar", "baz"]);
-    }
-
-    #[test]
-    fn root_level_file_not_in_any_subrepo_included() {
-        // A file like `me` at root gets root component "me", which is returned.
-        let output = "me\nooo/.gitrepo\n";
-        let mut result = parse_other_staged_roots(output, "echo360");
-        result.sort();
-        assert_eq!(result, vec!["me", "ooo"]);
-    }
-
-    #[test]
-    fn deduplicated_roots() {
-        let output = "lib/a.rs\nlib/b.rs\nlib/c.rs\n";
-        assert_eq!(parse_other_staged_roots(output, "current"), vec!["lib"]);
-    }
-
-    #[test]
-    fn sorted_alphabetically() {
-        let output = "zzz/a\naaa/b\nmid/c\n";
-        assert_eq!(
-            parse_other_staged_roots(output, "other"),
-            vec!["aaa", "mid", "zzz"]
-        );
-    }
 }
 
 /// Warn about other staged subrepos that will be bundled into this commit.
@@ -643,4 +590,61 @@ fn stage_subrepo_content(
     run_git(&["add", "-f", "--", &gitrepo_path_str], &ctx.repo_root)?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_other_staged_roots;
+
+    #[test]
+    fn no_staged_files_returns_empty() {
+        assert!(parse_other_staged_roots("", "echo360").is_empty());
+        assert!(parse_other_staged_roots("   \n  \n", "echo360").is_empty());
+    }
+
+    #[test]
+    fn only_current_subrepo_staged_returns_empty() {
+        let output = "echo360/.gitrepo\necho360/README.md\necho360/src/main.rs\n";
+        assert!(parse_other_staged_roots(output, "echo360").is_empty());
+    }
+
+    #[test]
+    fn other_subrepos_detected() {
+        let output = "ooo/.gitrepo\nooo/README.md\ndimensify/Cargo.toml\ndimensify/.gitrepo\necho360/src/main.rs\n";
+        let mut result = parse_other_staged_roots(output, "echo360");
+        result.sort();
+        assert_eq!(result, vec!["dimensify", "ooo"]);
+    }
+
+    #[test]
+    fn mix_current_and_others() {
+        let output = "foo/.gitrepo\nfoo/a.rs\nbar/.gitrepo\nbar/b.rs\nbaz/c.rs\n";
+        let mut result = parse_other_staged_roots(output, "foo");
+        result.sort();
+        assert_eq!(result, vec!["bar", "baz"]);
+    }
+
+    #[test]
+    fn root_level_file_not_in_any_subrepo_included() {
+        // A file like `me` at root gets root component "me", which is returned.
+        let output = "me\nooo/.gitrepo\n";
+        let mut result = parse_other_staged_roots(output, "echo360");
+        result.sort();
+        assert_eq!(result, vec!["me", "ooo"]);
+    }
+
+    #[test]
+    fn deduplicated_roots() {
+        let output = "lib/a.rs\nlib/b.rs\nlib/c.rs\n";
+        assert_eq!(parse_other_staged_roots(output, "current"), vec!["lib"]);
+    }
+
+    #[test]
+    fn sorted_alphabetically() {
+        let output = "zzz/a\naaa/b\nmid/c\n";
+        assert_eq!(
+            parse_other_staged_roots(output, "other"),
+            vec!["aaa", "mid", "zzz"]
+        );
+    }
 }
