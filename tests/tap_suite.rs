@@ -17,8 +17,12 @@ fn repo_root() -> PathBuf {
 fn run_tap(test_file: &str) {
     let root = repo_root();
     // Ensure binary is built (nextest builds before running, so this is usually a no-op).
+    let bin_dir = std::path::Path::new(env!("CARGO_BIN_EXE_git-subrepo"))
+        .parent()
+        .expect("binary has a parent directory");
     let status = std::process::Command::new("prove")
         .arg(format!("test/{test_file}"))
+        .env("GIT_SUBREPO_BIN_DIR", bin_dir)
         .current_dir(&root)
         .status()
         .expect("failed to run prove");

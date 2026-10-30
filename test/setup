@@ -77,7 +77,8 @@ export BASHLIB
 
 export PATH=$BASHLIB:$PATH
 # Add the Rust binary to PATH (takes precedence over lib/git-subrepo bash script)
-export PATH="$PWD/target/debug:$PATH"
+# tests/tap_suite.rs passes the dir cargo built into (e.g. under llvm-cov)
+export PATH="${GIT_SUBREPO_BIN_DIR:-$PWD/target/debug}:$PATH"
 # shellcheck disable=SC1091
 source bash+ :std
 

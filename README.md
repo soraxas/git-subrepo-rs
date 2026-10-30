@@ -284,6 +284,7 @@ $ git log --oneline --decorate
 4da3014e (tag: embodx/crates/potree-rs-upstream-base) chore: fix other fns   <- the fork point, tagged
 e4b15601 chore: rename `new` to `load`                                       <- upstream's own history
 ```
+
 The tag stays put even if the real `upstream` remote moves further later;
 re-running `workon` refreshes both the tracking ref and the tag together.
 
