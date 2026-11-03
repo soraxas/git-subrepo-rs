@@ -1,6 +1,4 @@
-use crate::commands::{
-    Context, assert_clean_for, delete_branch_and_worktree, normalize_subdir, subrepo_branch,
-};
+use crate::commands::{Context, delete_branch_and_worktree, normalize_subdir, subrepo_branch};
 use crate::encode::encode_subdir;
 use crate::git_utils::{commit_in_rev_list, rev_parse, run_git, try_run_git};
 use crate::gitrepo::read_gitrepo;
@@ -21,10 +19,9 @@ pub fn run(
 ) -> Result<()> {
     let mut ctx = Context::new()?;
     ctx.quiet = quiet;
-    assert_clean_for("push", &ctx)?;
-
     let subdir = normalize_subdir(&subdir);
     let subref = encode_subdir(&subdir);
+    assert_clean_for_push(&ctx, &subdir)?;
 
     let gitrepo_path = ctx.repo_root.join(&subdir).join(".gitrepo");
     let mut cfg = read_gitrepo(&gitrepo_path, &ctx.repo_root)?;
@@ -180,7 +177,12 @@ pub fn run(
         ),
     };
 
-    run_git(&["commit", "-m", &commit_msg], &ctx.repo_root)?;
+    // Commit only .gitrepo so unrelated staged work stays staged.
+    let gitrepo_rel = format!("{subdir}/.gitrepo");
+    run_git(
+        &["commit", "-m", &commit_msg, "--", &gitrepo_rel],
+        &ctx.repo_root,
+    )?;
 
     if !quiet {
         println!(
@@ -283,6 +285,50 @@ fn build_push_commit_message(
     format!(
         "git subrepo push {subdir}\n\nsubrepo:\n  subdir:   \"{subdir}\"\n  merged:   \"{short}\"\nupstream:\n  origin:   \"{remote}\"\n  branch:   \"{branch}\"\n  commit:   \"{short}\"\ngit-subrepo:\n  version:  \"{ver}\"\n  origin:   \"???\"\n  commit:   \"???\"\n"
     )
+}
+
+/// Push sends committed history only, so just the pushed subrepo must be clean.
+/// Changes elsewhere cannot reach the push or its path-limited .gitrepo commit.
+fn assert_clean_for_push(ctx: &Context, subdir: &str) -> Result<()> {
+    run_git(
+        &["update-index", "-q", "--ignore-submodules", "--refresh"],
+        &ctx.repo_root,
+    )?;
+    let (_, unstaged) = try_run_git(
+        &[
+            "diff-files",
+            "--name-only",
+            "--ignore-submodules",
+            "--",
+            subdir,
+        ],
+        &ctx.repo_root,
+    );
+    let (_, staged) = try_run_git(
+        &[
+            "diff-index",
+            "--cached",
+            "--name-only",
+            "--ignore-submodules",
+            "HEAD",
+            "--",
+            subdir,
+        ],
+        &ctx.repo_root,
+    );
+    // A dirty .gitrepo is rewritten by push itself (e.g. after `git subrepo fix`).
+    let blocking: Vec<_> = unstaged
+        .lines()
+        .chain(staged.lines())
+        .filter(|path| !path.trim().is_empty() && !path.ends_with("/.gitrepo"))
+        .collect();
+    if let Some(first) = blocking.first() {
+        anyhow::bail!(
+            "Can't push subrepo. '{subdir}' has uncommitted changes that would not be pushed \
+             (e.g. '{first}'). Commit or stash them first."
+        );
+    }
+    Ok(())
 }
 
 /// `--no-verify` also skips the Git LFS pre-push hook, so upload LFS objects ourselves.

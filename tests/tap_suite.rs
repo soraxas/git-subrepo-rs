@@ -62,6 +62,7 @@ tap_test!(issue95, "issue95.t");
 tap_test!(issue96, "issue96.t");
 tap_test!(pull_all, "pull-all.t");
 tap_test!(no_verify, "no-verify.t");
+tap_test!(push_dirty_tree, "push-dirty-tree.t");
 tap_test!(push_no_verify, "push-no-verify.t");
 tap_test!(pull_merge, "pull-merge.t");
 tap_test!(pull_message, "pull-message.t");

@@ -184,6 +184,10 @@ git subrepo push -a                             # push all subrepos
 git subrepo push lib/mylib --no-verify          # skip the owning checkout's pre-push hook
 ```
 
+Only the pushed subrepo must be clean: uncommitted changes inside it would not be
+pushed, so they block. Changes elsewhere in the checkout do not, and staged work
+stays staged because the follow-up commit records only `<subdir>/.gitrepo`.
+
 The push runs from the owning checkout, so its `pre-push` hook runs too. When that
 hook stops the push, the error names it. If its checks are meant for the owning
 repository rather than the subrepo upstream, `--no-verify` skips it. Git LFS
