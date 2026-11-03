@@ -492,6 +492,7 @@ async fn main() {
 
                 update: _,
                 message,
+                no_verify,
             })) => {
                 if all || all_all {
                     let subrepos = get_all_subrepos(all_all)?;
@@ -517,6 +518,7 @@ async fn main() {
                                 squash,
                                 quiet,
                                 message.clone(),
+                                no_verify,
                             )?;
                         }
                     }
@@ -525,7 +527,7 @@ async fn main() {
                     let subdir = subdir
                         .ok_or_else(|| anyhow::anyhow!("Command 'push' requires arg 'subdir'."))?;
                     commands::push::run(
-                        subdir, branch, remote, force, method, squash, quiet, message,
+                        subdir, branch, remote, force, method, squash, quiet, message, no_verify,
                     )
                 }
             }

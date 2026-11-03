@@ -77,6 +77,9 @@ pub struct PushArgs {
     pub update: bool,
     #[usage(short = 'm', long, value_hint = usage::ValueHint::Other)]
     pub message: Option<String>,
+    /// Skip the owning checkout's pre-push hook (Git LFS objects are still uploaded)
+    #[usage(long)]
+    pub no_verify: bool,
 }
 
 #[derive(usage::Args)]

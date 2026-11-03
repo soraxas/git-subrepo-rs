@@ -5,6 +5,7 @@ use crate::encode::encode_subdir;
 use crate::git_utils::{commit_in_rev_list, rev_parse, run_git, try_run_git};
 use crate::gitrepo::read_gitrepo;
 use anyhow::Result;
+use std::path::PathBuf;
 
 #[allow(clippy::too_many_arguments)]
 pub fn run(
@@ -16,6 +17,7 @@ pub fn run(
     squash: bool,
     quiet: bool,
     message: Option<String>,
+    no_verify: bool,
 ) -> Result<()> {
     let mut ctx = Context::new()?;
     ctx.quiet = quiet;
@@ -121,9 +123,14 @@ pub fn run(
     let push_refspec = format!("{branch_name}:{push_branch}");
     let mut push_args = vec!["push"];
     push_args.extend_from_slice(&force_flag);
+    if no_verify {
+        push_args.push("--no-verify");
+        push_lfs_objects(&ctx, &cfg.remote, &branch_name)?;
+    }
     push_args.push(&cfg.remote);
     push_args.push(&push_refspec);
-    run_git(&push_args, &ctx.repo_root)?;
+    run_git(&push_args, &ctx.repo_root)
+        .map_err(|err| explain_push_failure(err, &ctx, no_verify))?;
 
     // Get new upstream head after push
     let new_upstream_head =
@@ -276,4 +283,51 @@ fn build_push_commit_message(
     format!(
         "git subrepo push {subdir}\n\nsubrepo:\n  subdir:   \"{subdir}\"\n  merged:   \"{short}\"\nupstream:\n  origin:   \"{remote}\"\n  branch:   \"{branch}\"\n  commit:   \"{short}\"\ngit-subrepo:\n  version:  \"{ver}\"\n  origin:   \"???\"\n  commit:   \"???\"\n"
     )
+}
+
+/// `--no-verify` also skips the Git LFS pre-push hook, so upload LFS objects ourselves.
+fn push_lfs_objects(ctx: &Context, remote: &str, branch: &str) -> Result<()> {
+    let (lfs, files) = try_run_git(&["lfs", "ls-files", "--name-only", branch], &ctx.repo_root);
+    if lfs && !files.is_empty() {
+        run_git(&["lfs", "push", remote, branch], &ctx.repo_root)?;
+    }
+    Ok(())
+}
+
+/// The owning checkout's executable pre-push hook, honouring core.hooksPath.
+fn pre_push_hook(ctx: &Context) -> Option<PathBuf> {
+    let path = run_git(
+        &["rev-parse", "--git-path", "hooks/pre-push"],
+        &ctx.repo_root,
+    )
+    .ok()?;
+    let path = ctx.repo_root.join(path);
+    #[cfg(unix)]
+    let runnable = {
+        use std::os::unix::fs::PermissionsExt;
+        path.metadata()
+            .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+    };
+    #[cfg(not(unix))]
+    let runnable = path.is_file();
+    runnable.then_some(path)
+}
+
+/// Name the hook when git stopped before updating any remote ref.
+fn explain_push_failure(err: anyhow::Error, ctx: &Context, no_verify: bool) -> anyhow::Error {
+    let output = err.to_string();
+    let hook_rejected =
+        !no_verify && output.contains("failed to push some refs") && !output.contains(" -> ");
+    match pre_push_hook(ctx).filter(|_| hook_rejected) {
+        Some(hook) => anyhow::anyhow!(
+            "{output}\n\n\
+             The push was stopped by the owning checkout's pre-push hook:\n  {}\n\
+             That hook runs for every push from '{}', including subrepo upstreams.\n\
+             If its checks do not apply to this subrepo, rerun with --no-verify\n\
+             (Git LFS objects are still uploaded).",
+            hook.display(),
+            ctx.repo_root.display(),
+        ),
+        None => err,
+    }
 }

@@ -172,7 +172,7 @@ Resolve conflicts in the worktree, then finalise with:
 ### `push` — Push local changes upstream
 
 ```text
-git subrepo push [<subdir>] [-b <branch>] [-r <remote>] [-s] [-f]
+git subrepo push [<subdir>] [-b <branch>] [-r <remote>] [-s] [-f] [--no-verify]
 ```
 
 Pushes the local subrepo branch back to the upstream remote. The branch must already include the upstream HEAD (i.e. you must pull before you can push, unless it's a first push after `init`).
@@ -181,7 +181,13 @@ Pushes the local subrepo branch back to the upstream remote. The branch must alr
 git subrepo push lib/mylib
 git subrepo push lib/mylib -b feature-branch   # push to a different branch
 git subrepo push -a                             # push all subrepos
+git subrepo push lib/mylib --no-verify          # skip the owning checkout's pre-push hook
 ```
+
+The push runs from the owning checkout, so its `pre-push` hook runs too. When that
+hook stops the push, the error names it. If its checks are meant for the owning
+repository rather than the subrepo upstream, `--no-verify` skips it. Git LFS
+objects on the pushed branch are still uploaded with `git lfs push`.
 
 ### `pr` — Export changes through a reviewed upstream PR
 
