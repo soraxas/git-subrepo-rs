@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [man]
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
@@ -23,10 +23,10 @@ jobs:
   plan:
     runs-on: ubuntu-latest
     outputs:
-      test-code: ${{ !contains(github.event.pull_request.labels.*.name, 'test:skip') && (steps.changed.outputs.any_code_changed == 'true' || github.ref == 'refs/heads/man') }}
-      save-rust-cache: ${{ github.ref == 'refs/heads/man' || steps.changed.outputs.cache_changed == 'true' }}
+      test-code: ${{ !contains(github.event.pull_request.labels.*.name, 'test:skip') && (steps.changed.outputs.any_code_changed == 'true' || github.ref == 'refs/heads/main') }}
+      save-rust-cache: ${{ github.ref == 'refs/heads/main' || steps.changed.outputs.cache_changed == 'true' }}
       # Run benchmarks only if Rust code changed
-      run-bench: ${{ !contains(github.event.pull_request.labels.*.name, 'test:skip') && (steps.changed.outputs.rust_code_changed == 'true' || github.ref == 'refs/heads/man') }}
+      run-bench: ${{ !contains(github.event.pull_request.labels.*.name, 'test:skip') && (steps.changed.outputs.rust_code_changed == 'true' || github.ref == 'refs/heads/main') }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -37,7 +37,7 @@ jobs:
         id: changed
         shell: bash
         run: |
-          CHANGED_FILES=$(git diff --name-only ${{ github.event.pull_request.base.sha || 'origin/man' }}...HEAD)
+          CHANGED_FILES=$(git diff --name-only ${{ github.event.pull_request.base.sha || 'origin/main' }}...HEAD)
 
           ANY_CODE_CHANGED=false
           CACHE_CHANGED=false
