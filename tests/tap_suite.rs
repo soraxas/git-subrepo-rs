@@ -50,6 +50,7 @@ tap_test!(clean, "clean.t");
 tap_test!(clone_annotated_tag, "clone-annotated-tag.t");
 tap_test!(clone_message, "clone-message.t");
 tap_test!(clone, "clone.t");
+tap_test!(commit_dirty_gitrepo, "commit-dirty-gitrepo.t");
 tap_test!(compile, "compile.t");
 tap_test!(config, "config.t");
 tap_test!(encode, "encode.t");

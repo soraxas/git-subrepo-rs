@@ -180,10 +180,15 @@ pub fn assert_clean_for_subdir(cmd: &str, ctx: &Context, subdir: Option<&str>) -
     }
 
     if !ctx.original_head_commit.is_empty() {
-        let mut diff_index_args = vec!["diff-index", "--quiet", "--ignore-submodules", "HEAD"];
+        let mut diff_index_args = vec!["diff-index", "--name-only", "--ignore-submodules", "HEAD"];
         diff_index_args.extend_from_slice(&path_args);
-        let (ok2, _) = try_run_git(&diff_index_args, &ctx.repo_root);
-        if !ok2 {
+        let (ok2, changed) = try_run_git(&diff_index_args, &ctx.repo_root);
+        // Same .gitrepo allowance as above; a staged .gitrepo is still caught below.
+        if !ok2
+            || changed
+                .lines()
+                .any(|l| !l.trim().is_empty() && !l.ends_with("/.gitrepo"))
+        {
             anyhow::bail!("Can't {cmd} subrepo. Working tree has changes.");
         }
 
@@ -1401,19 +1406,39 @@ pub fn subrepo_commit(
     }
 
     let import_tree = crate::exclusions::import_tree(&ctx.repo_root, subdir, subrepo_commit_ref)?;
-    remove_subdir_content(ctx, subdir, &import_tree, false)?;
+    let gitrepo_rel = format!("{subdir}/.gitrepo");
 
-    // Read in the subrepo content
-    let prefix = format!("{subdir}/");
-    run_git(
-        &["read-tree", "--prefix", &prefix, "-u", &import_tree],
+    // Keep an unstaged .gitrepo edit (e.g. parent= from `git subrepo fix`) through the
+    // re-import: untrack it so `git rm` leaves the file, then update it in place below.
+    let gitrepo_spec = format!(":(literal){gitrepo_rel}");
+    let keep_gitrepo = !try_run_git(
+        &["diff-files", "--quiet", "--", &gitrepo_spec],
         &ctx.repo_root,
-    )?;
+    )
+    .0;
+    if keep_gitrepo {
+        run_git(
+            &["rm", "--cached", "-q", "--", &gitrepo_spec],
+            &ctx.repo_root,
+        )?;
+    }
+    let prefix = format!("{subdir}/");
+    let imported = remove_subdir_content(ctx, subdir, &import_tree, false).and_then(|()| {
+        // Read in the subrepo content
+        run_git(
+            &["read-tree", "--prefix", &prefix, "-u", &import_tree],
+            &ctx.repo_root,
+        )
+        .map(|_| ())
+    });
+    if imported.is_err() && keep_gitrepo {
+        let _ = try_run_git(&["reset", "-q", "--", &gitrepo_spec], &ctx.repo_root);
+    }
+    imported?;
 
     // Write .gitrepo file
     let gitrepo_path = ctx.repo_root.join(subdir).join(".gitrepo");
     let gitrepo_path_str = gitrepo_path.to_string_lossy().into_owned();
-    let gitrepo_rel = format!("{subdir}/.gitrepo");
 
     // Determine if parent should be written
     // Parent is written when upstream_head_commit == git rev-parse(subrepo_commit_ref)
