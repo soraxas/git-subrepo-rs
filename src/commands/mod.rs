@@ -1409,19 +1409,21 @@ pub fn subrepo_commit(
     let gitrepo_rel = format!("{subdir}/.gitrepo");
 
     // Keep an unstaged .gitrepo edit (e.g. parent= from `git subrepo fix`) through the
-    // re-import: untrack it so `git rm` leaves the file, then update it in place below.
+    // re-import: hold it in memory, import from the committed file, then write it back.
+    let gitrepo_path = ctx.repo_root.join(subdir).join(".gitrepo");
     let gitrepo_spec = format!(":(literal){gitrepo_rel}");
-    let keep_gitrepo = !try_run_git(
+    let edited_gitrepo = if try_run_git(
         &["diff-files", "--quiet", "--", &gitrepo_spec],
         &ctx.repo_root,
     )
-    .0;
-    if keep_gitrepo {
-        run_git(
-            &["rm", "--cached", "-q", "--", &gitrepo_spec],
-            &ctx.repo_root,
-        )?;
-    }
+    .0
+    {
+        None
+    } else {
+        let content = std::fs::read(&gitrepo_path)?;
+        run_git(&["checkout", "--", &gitrepo_spec], &ctx.repo_root)?;
+        Some(content)
+    };
     let prefix = format!("{subdir}/");
     let imported = remove_subdir_content(ctx, subdir, &import_tree, false).and_then(|()| {
         // Read in the subrepo content
@@ -1431,13 +1433,22 @@ pub fn subrepo_commit(
         )
         .map(|_| ())
     });
-    if imported.is_err() && keep_gitrepo {
-        let _ = try_run_git(&["reset", "-q", "--", &gitrepo_spec], &ctx.repo_root);
+    if let Err(err) = imported {
+        // The subdir matched HEAD apart from .gitrepo, so restoring it loses nothing.
+        let _ = try_run_git(
+            &["checkout", "HEAD", "--", &format!(":(literal){subdir}")],
+            &ctx.repo_root,
+        );
+        if let Some(content) = &edited_gitrepo {
+            std::fs::write(&gitrepo_path, content)?;
+        }
+        return Err(err);
     }
-    imported?;
+    if let Some(content) = &edited_gitrepo {
+        std::fs::write(&gitrepo_path, content)?;
+    }
 
     // Write .gitrepo file
-    let gitrepo_path = ctx.repo_root.join(subdir).join(".gitrepo");
     let gitrepo_path_str = gitrepo_path.to_string_lossy().into_owned();
 
     // Determine if parent should be written

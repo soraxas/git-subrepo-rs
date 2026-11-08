@@ -16,6 +16,8 @@ subrepo-clone-bar-into-foo
   git subrepo branch bar
   cd .git/tmp/subrepo/bar
   add-new-files Local
+  # Some upstreams carry their own .gitrepo; the import must still succeed
+  add-new-files .gitrepo
 ) &> /dev/null || die
 
 gitrepo=$OWNER/foo/bar/.gitrepo
@@ -42,6 +44,24 @@ fixed_parent=$(cd "$OWNER/foo"; git rev-parse HEAD)
     "git-subrepo: Can't commit subrepo. Index has changes." \
     'staged .gitrepo edit is reported as index changes'
   (cd "$OWNER/foo"; git reset -q -- bar/.gitrepo)
+}
+
+# A failed import restores the subrepo instead of leaving it deleted
+{
+  (cd "$OWNER/foo"; echo 'in the way' > bar/Local)
+  commit_status=0
+  (
+    cd "$OWNER/foo"
+    git subrepo commit bar
+  ) &> /dev/null || commit_status=$?
+
+  isnt "$commit_status" "0" \
+    'subrepo commit fails when an untracked file blocks the import'
+  is "$(cd "$OWNER/foo"; git status --porcelain)" \
+    " M bar/.gitrepo
+?? bar/Local" \
+    'failed import leaves the subrepo files and the .gitrepo edit in place'
+  rm "$OWNER/foo/bar/Local"
 }
 
 # An unstaged .gitrepo edit is allowed and survives the import
