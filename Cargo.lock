@@ -109,7 +109,7 @@ dependencies = [
 
 [[package]]
 name = "git-subrepo"
-version = "0.0.1"
+version = "0.0.2-main.1"
 dependencies = [
  "anyhow",
  "colored",
