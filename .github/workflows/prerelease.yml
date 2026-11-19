@@ -1,0 +1,75 @@
+# Publish a prerelease for every commit on main that passes CI.
+#
+# The version in Cargo.toml must match the release tag for dist, so this
+# workflow commits a prerelease version bump on a detached HEAD, tags that
+# commit (e.g. v0.0.2-main.42), and dispatches release.yml on the tag.
+#
+# Tags pushed with GITHUB_TOKEN do not trigger workflows, but
+# workflow_dispatch is exempt from that rule, so the release is started
+# explicitly with `gh workflow run`.
+name: Prerelease
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: prerelease
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  tag:
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push') }}
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Compute prerelease version
+        id: version
+        shell: bash
+        run: |
+          current=$(sed -n 's/^version *= *"\(.*\)"/\1/p' Cargo.toml | head -n1)
+          base=${current%%-*}
+          # If the base version was already released, the prerelease targets
+          # the next patch so it sorts above the existing release.
+          if git ls-remote --exit-code --tags origin "refs/tags/v${base}" >/dev/null; then
+            IFS=. read -r major minor patch <<< "${base}"
+            base="${major}.${minor}.$((patch + 1))"
+          fi
+          version="${base}-main.${GITHUB_RUN_NUMBER}"
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "tag=v${version}" >> "${GITHUB_OUTPUT}"
+          echo "Prerelease version: ${version}"
+
+      - name: Commit version bump and push tag
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          sed -i "0,/^version *= *\".*\"/s//version = \"${VERSION}\"/" Cargo.toml
+          # Update the package's own entry in Cargo.lock so --locked builds pass.
+          sed -i "/^name = \"git-subrepo\"$/{n;s/^version = \".*\"/version = \"${VERSION}\"/}" Cargo.lock
+          cargo metadata --locked --format-version 1 >/dev/null
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "Prerelease ${TAG}"
+          git tag "${TAG}"
+          git push origin "refs/tags/${TAG}"
+
+      - name: Dispatch release workflow
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: gh workflow run release.yml --repo "${GITHUB_REPOSITORY}" --ref "${TAG}"
